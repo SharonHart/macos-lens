@@ -1,0 +1,348 @@
+import AppKit
+import AVFoundation
+import Carbon
+import LensCore
+import ScreenCaptureKit
+
+enum CaptureMode { case search, text }
+
+@MainActor
+final class AppController: NSObject, NSApplicationDelegate {
+    private var status: NSStatusItem!
+    private var menu: NSMenu!
+    private var overlays: [OverlayWindow] = []
+    private var resultWindow: TextWindow?
+    private var settingsWindow: NSWindow?
+    private var previousApp: NSRunningApplication?
+    private var busy = false
+    private var hotKey: EventHotKeyRef?
+    private var eventHandler: EventHandlerRef?
+    private var chromeField: NSTextField?
+    private let defaults = UserDefaults.standard
+    private let speech = AVSpeechSynthesizer()
+
+    private var shortcutIndex: Int { defaults.integer(forKey: "shortcut") }
+    private let shortcuts: [(String, UInt32, UInt32)] = [
+        ("Control + Option + Space", UInt32(kVK_Space), UInt32(controlKey | optionKey)),
+        ("Control + Shift + Space", UInt32(kVK_Space), UInt32(controlKey | shiftKey)),
+        ("Command + Shift + 2", UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey))
+    ]
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        status.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "macOS Lens")
+        menu = NSMenu()
+        menu.addItem(item("Search screen…", #selector(searchScreen)))
+        menu.addItem(item("Extract screen text…", #selector(extractScreen)))
+        menu.addItem(.separator())
+        menu.addItem(item("Settings & privacy…", #selector(showSettings)))
+        menu.addItem(item("Quit macOS Lens", #selector(quit)))
+        status.button?.target = self
+        status.button?.action = #selector(statusClicked)
+        status.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        status.button?.toolTip = "Search screen; right-click for text, settings and quit"
+        registerShortcut()
+        if !defaults.bool(forKey: "onboarded") { showSettings() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if let hotKey { UnregisterEventHotKey(hotKey) }
+        if let eventHandler { RemoveEventHandler(eventHandler) }
+        speech.stopSpeaking(at: .immediate)
+    }
+
+    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        return item
+    }
+
+    @objc private func quit() { NSApp.terminate(nil) }
+    @objc private func searchScreen() { activate(mode: .search) }
+    @objc private func extractScreen() { activate(mode: .text) }
+
+    @objc private func statusClicked() {
+        if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
+            if let button = status.button {
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+            }
+        } else {
+            activate(mode: .search)
+        }
+    }
+
+    private func registerShortcut() {
+        if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
+        if eventHandler == nil {
+            var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            let install = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+                guard let userData else { return OSStatus(eventNotHandledErr) }
+                let controller = Unmanaged<AppController>.fromOpaque(userData).takeUnretainedValue()
+                DispatchQueue.main.async { controller.activate(mode: .search) }
+                return noErr
+            }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
+            guard install == noErr else {
+                showError(LensError.message("Could not install the global shortcut handler (\(install))."))
+                return
+            }
+        }
+        let shortcut = shortcuts[min(max(shortcutIndex, 0), shortcuts.count - 1)]
+        let result = RegisterEventHotKey(shortcut.1, shortcut.2,
+                                        EventHotKeyID(signature: 0x4c454e53, id: 1),
+                                        GetApplicationEventTarget(), 0, &hotKey)
+        if result != noErr {
+            showError(LensError.message("The shortcut could not be registered (\(result)). Choose another in Settings."))
+        }
+    }
+
+    func activate(mode: CaptureMode) {
+        guard !busy, overlays.isEmpty else { return }
+        if mode == .search && !defaults.bool(forKey: "experimentalUpload") {
+            showSettings()
+            return
+        }
+        if mode == .search {
+            do { _ = try chromeURL() } catch { showError(error); return }
+        }
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            showError(LensError.message("Enable macOS Lens in System Settings → Privacy & Security → " +
+                                       "Screen & System Audio Recording, then quit and reopen the app if macOS asks. " +
+                                       "No screen image was uploaded."))
+            return
+        }
+        previousApp = NSWorkspace.shared.frontmostApplication
+        settingsWindow?.orderOut(nil)
+        resultWindow?.orderOut(nil)
+        busy = true
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                var frames: [(NSScreen, CGImage)] = []
+                let screens = NSScreen.screens
+                for screen in screens {
+                    guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                          let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
+                        throw LensError.message("A connected display could not be captured. Retry after the display change.")
+                    }
+                    let config = SCStreamConfiguration()
+                    config.width = Int(screen.frame.width * screen.backingScaleFactor)
+                    config.height = Int(screen.frame.height * screen.backingScaleFactor)
+                    config.showsCursor = false
+                    config.captureResolution = .best
+                    let filter = SCContentFilter(display: display, excludingWindows: [])
+                    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+                    frames.append((screen, image))
+                }
+                guard !frames.isEmpty else { throw LensError.message("No displays are available.") }
+                // All screenshots are acquired before any overlay can appear in the capture.
+                overlays = frames.map { screen, image in
+                    OverlayWindow(screen: screen, image: image, mode: mode,
+                                  submit: { [weak self] crop, selectedMode in self?.submit(crop, mode: selectedMode) },
+                                  cancel: { [weak self] in self?.dismiss() },
+                                  failure: { [weak self] error in self?.showError(error) })
+                }
+                NSApp.activate(ignoringOtherApps: true)
+                for window in overlays { window.orderFrontRegardless() }
+                let mouse = NSEvent.mouseLocation
+                (overlays.first(where: { $0.frame.contains(mouse) }) ?? overlays.first)?.makeKey()
+                busy = false
+            } catch {
+                busy = false
+                dismiss()
+                showError(error)
+            }
+        }
+    }
+
+    private func dismiss(restore: Bool = true) {
+        for window in overlays { window.orderOut(nil); window.close() }
+        overlays.removeAll()
+        if restore { previousApp?.activate(options: []) }
+        previousApp = nil
+    }
+
+    private func submit(_ image: CGImage, mode: CaptureMode) {
+        guard !busy else { return }
+        if mode == .search && !defaults.bool(forKey: "experimentalUpload") {
+            dismiss()
+            showSettings()
+            return
+        }
+        let browser: URL?
+        do { browser = mode == .search ? try chromeURL() : nil }
+        catch { showError(error); return }
+        dismiss()
+        busy = true
+        status.button?.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Processing selection")
+        Task {
+            do {
+                if mode == .text {
+                    let lines = try await Task.detached(priority: .userInitiated) {
+                        try OCR.recognize(image)
+                    }.value
+                    guard !lines.isEmpty else {
+                        throw LensError.message("No readable text was found in the selected area. Try a larger selection.")
+                    }
+                    resultWindow = TextWindow(text: lines.map(\.text).joined(separator: "\n"), action: { [weak self] action, text in
+                        self?.textAction(action, text: text)
+                    })
+                    NSApp.activate(ignoringOtherApps: true)
+                    resultWindow?.makeKeyAndOrderFront(nil)
+                } else {
+                    let result = try await LensUpload.upload(image)
+                    if let browser { try await ChromeBrowser.open(result, in: browser) }
+                }
+            } catch { showError(error) }
+            busy = false
+            status.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "macOS Lens")
+        }
+    }
+
+    private func chromeURL() throws -> URL {
+        try ChromeBrowser.applicationURL(preferredPath: defaults.string(forKey: "chromePath"))
+    }
+
+    private func textAction(_ action: String, text: String) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showError(LensError.message("Select some text first."))
+            return
+        }
+        switch action {
+        case "Copy":
+            NSPasteboard.general.clearContents()
+            guard NSPasteboard.general.setString(text, forType: .string) else {
+                showError(LensError.message("Could not copy text to the clipboard."))
+                return
+            }
+        case "Listen":
+            speech.stopSpeaking(at: .immediate)
+            guard let voice = AVSpeechSynthesisVoice(language: Locale.current.language.languageCode?.identifier) else {
+                showError(LensError.message("The system speech voice is unavailable."))
+                return
+            }
+            let utterance = AVSpeechUtterance(string: text)
+            utterance.voice = voice
+            speech.speak(utterance)
+        case "Stop":
+            speech.stopSpeaking(at: .immediate)
+        default:
+            let alert = NSAlert()
+            alert.messageText = action == "Translate" ? "Send selected text to Google Translate?" : "Search selected text with Google?"
+            alert.informativeText = "Only the selected text will be sent, in your chosen Chrome. OCR itself runs locally."
+            alert.addButton(withTitle: "Continue")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            Task {
+                do {
+                    let url = action == "Translate" ? SearchURL.translate(text) : SearchURL.text(text)
+                    try await ChromeBrowser.open(url, in: chromeURL())
+                } catch { showError(error) }
+            }
+        }
+    }
+
+    func showError(_ error: Error) {
+        if !overlays.isEmpty { dismiss(restore: false) }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "macOS Lens"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
+    }
+
+    @objc private func showSettings() {
+        if let settingsWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            settingsWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 450),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "macOS Lens — Settings & privacy"
+        window.isReleasedWhenClosed = false
+        let root = window.contentView!
+        func label(_ text: String, y: CGFloat, height: CGFloat = 24, bold: Bool = false) {
+            let field = NSTextField(wrappingLabelWithString: text)
+            field.frame = NSRect(x: 24, y: y, width: 550, height: height)
+            if bold { field.font = .boldSystemFont(ofSize: 18) }
+            root.addSubview(field)
+        }
+        label("Circle to Search, adapted for your Mac", y: 398, bold: true)
+        label("Use the menu-bar viewfinder or a global shortcut. Drag a rectangle or draw around an area. " +
+              "Release to search; hold Option to adjust first. Escape returns to your previous app.", y: 333, height: 56)
+        label("Screen capture and Apple Vision OCR stay in memory on this Mac. Visual search sends ONLY your " +
+              "chosen crop to Google. No Chrome cookies are read and no public image host is used.", y: 268, height: 56)
+        let checkbox = NSButton(checkboxWithTitle: "Enable experimental Google Lens image upload", target: self,
+                                action: #selector(toggleUpload(_:)))
+        checkbox.frame = NSRect(x: 24, y: 240, width: 550, height: 24)
+        checkbox.state = defaults.bool(forKey: "experimentalUpload") ? .on : .off
+        root.addSubview(checkbox)
+        label("This uses an undocumented Google endpoint, not an official API. It can stop working. " +
+              "Results open in Chrome, not an Android-style embedded result sheet.", y: 190, height: 42)
+        label("Chrome application", y: 161)
+        let chrome = NSTextField(labelWithString: defaults.string(forKey: "chromePath") ?? "Google Chrome (installed default)")
+        chrome.frame = NSRect(x: 24, y: 134, width: 430, height: 24)
+        chrome.lineBreakMode = .byTruncatingMiddle
+        chromeField = chrome
+        root.addSubview(chrome)
+        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseChrome))
+        choose.frame = NSRect(x: 464, y: 132, width: 110, height: 28)
+        root.addSubview(choose)
+        label("Global shortcut", y: 99)
+        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 70, width: 300, height: 28))
+        popup.addItems(withTitles: shortcuts.map(\.0))
+        popup.selectItem(at: min(max(shortcutIndex, 0), shortcuts.count - 1))
+        popup.target = self
+        popup.action = #selector(changeShortcut(_:))
+        root.addSubview(popup)
+        let done = NSButton(title: "Save settings", target: self, action: #selector(saveSettings))
+        done.frame = NSRect(x: 444, y: 22, width: 130, height: 30)
+        root.addSubview(done)
+        let text = NSButton(title: "Try local OCR", target: self, action: #selector(tryOCR))
+        text.frame = NSRect(x: 24, y: 22, width: 150, height: 30)
+        root.addSubview(text)
+        settingsWindow = window
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func toggleUpload(_ sender: NSButton) {
+        defaults.set(sender.state == .on, forKey: "experimentalUpload")
+    }
+
+    @objc private func changeShortcut(_ sender: NSPopUpButton) {
+        defaults.set(sender.indexOfSelectedItem, forKey: "shortcut")
+        registerShortcut()
+    }
+
+    @objc private func chooseChrome() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowedContentTypes = [.application]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let bundle = Bundle(url: url), ["com.google.Chrome", "com.google.Chrome.beta",
+                                             "com.google.Chrome.dev", "com.google.Chrome.canary"]
+            .contains(bundle.bundleIdentifier ?? "") else {
+            showError(LensError.message("Choose a Google Chrome application, not another browser."))
+            return
+        }
+        defaults.set(url.path, forKey: "chromePath")
+        chromeField?.stringValue = url.path
+    }
+
+    @objc private func saveSettings() {
+        defaults.set(true, forKey: "onboarded")
+        settingsWindow?.orderOut(nil)
+    }
+
+    @objc private func tryOCR() {
+        saveSettings()
+        activate(mode: .text)
+    }
+}
