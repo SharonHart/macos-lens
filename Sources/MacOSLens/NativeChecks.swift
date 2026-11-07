@@ -31,6 +31,15 @@ enum NativeChecks {
                                    timestamp: 0, windowNumber: window.windowNumber,
                                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
             }
+            let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                         timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                         characters: "\r", charactersIgnoringModifiers: "\r",
+                                         isARepeat: false, keyCode: 36)!
+            view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 10, y: 20)))
+            view.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: 11, y: 21)))
+            view.keyDown(with: enter)
+            check(submitted == nil && error == nil && !cancelled,
+                  "tap and empty Return keep the overlay open without an error")
             view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 10, y: 20)))
             view.mouseDragged(with: mouse(.leftMouseDragged, NSPoint(x: 110, y: 80)))
             view.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: 110, y: 80)))
@@ -44,10 +53,6 @@ enum NativeChecks {
             view.mouseDown(with: mouse(.leftMouseDown, NSPoint(x: 300, y: 180)))
             view.mouseUp(with: mouse(.leftMouseUp, NSPoint(x: 350, y: 200)))
             check(submitted == nil, "corner adjustment waits for Return")
-            let enter = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
-                                         timestamp: 0, windowNumber: window.windowNumber, context: nil,
-                                         characters: "\r", charactersIgnoringModifiers: "\r",
-                                         isARepeat: false, keyCode: 36)!
             view.keyDown(with: enter)
             check(submitted?.width == image.width * 150 / 640 &&
                   submitted?.height == image.height * 100 / 240, "Return submits adjusted bounds")

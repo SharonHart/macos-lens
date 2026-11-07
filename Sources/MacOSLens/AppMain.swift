@@ -19,8 +19,8 @@ struct AppMain {
                         throw LensError.message("Lens returned dimensions inconsistent with the synthetic image.")
                     }
                     print("PASS synthetic PNG upload and Lens redirect validation (\(dimensions!)).")
-                    print("Chrome results rendering is NOT verified by this upload-only test.")
-                    print("No user screen content captured; Chrome cookies were not accessed.")
+                    print("Browser results rendering is NOT verified by this upload-only test.")
+                    print("No user screen content captured; browser cookies were not accessed.")
                     if CommandLine.arguments.contains("--browser-check") {
                         print("UPLOAD_RESULT_URL \(url.absoluteString)")
                     }

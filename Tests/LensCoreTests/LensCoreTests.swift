@@ -95,9 +95,16 @@ final class LensCoreTests {
             .queryItems?.first(where: { $0.name == "text" })?.value, text)
     }
 
-    func testChromeSelectionFailsExplicitly() {
-        XCTAssertThrowsError(try ChromeBrowser.applicationURL(preferredPath: "/not-installed/Chrome.app"))
-        XCTAssertThrowsError(try ChromeBrowser.applicationURL(preferredPath: "/System/Applications/TextEdit.app"))
+    func testBrowserSelection() {
+        XCTAssertThrowsError(try Browser.applicationURL(preferredPath: "/not-installed/Browser.app"))
+        XCTAssertThrowsError(try Browser.applicationURL(preferredPath: "/System/Applications/TextEdit.app"))
+        XCTAssertTrue(!Browser.opensWebLinks(URL(fileURLWithPath: "/System/Applications/TextEdit.app")))
+        if let system = Browser.defaultApplication() {
+            XCTAssertEqual(try? Browser.applicationURL(preferredPath: nil), system)
+            XCTAssertEqual(try? Browser.applicationURL(preferredPath: ""), system)
+            XCTAssertTrue(Browser.opensWebLinks(system), "default browser must open web links")
+            XCTAssertEqual(try? Browser.applicationURL(preferredPath: system.path), system)
+        }
     }
 
     func testCropUsesTopImageRows() throws {
@@ -117,6 +124,35 @@ final class LensCoreTests {
         let color = NSBitmapImageRep(cgImage: crop).colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
         XCTAssertTrue(color.redComponent > 0.9 && color.blueComponent < 0.1, "Top region must select red pixels.")
     }
+
+    func testTinySelectionsAreRejected() {
+        XCTAssertTrue(!Selection.isUsable(nil))
+        XCTAssertTrue(!Selection.isUsable(CGRect(x: 10, y: 10, width: 1, height: 1)))
+        XCTAssertTrue(!Selection.isUsable(CGRect(x: 10, y: 10, width: 40, height: 3)))
+        XCTAssertTrue(Selection.isUsable(CGRect(x: 10, y: 10, width: 4, height: 4)))
+        XCTAssertTrue(Selection.isUsable(CGRect(x: 10, y: 10, width: -4, height: -4)))
+    }
+
+    func testShortcutSystemConflicts() {
+        let controlOption = Shortcut.named("control-option-space")
+        let commandShift2 = Shortcut.named("command-shift-2")
+        XCTAssertEqual(Shortcut.named(nil), commandShift2)
+        XCTAssertEqual(Shortcut.named("missing"), commandShift2)
+        XCTAssertTrue(controlOption.conflictsWithSystem(nil), "macOS enables input-source switching by default")
+        XCTAssertTrue(!controlOption.conflictsWithSystem(["61": ["enabled": false]]))
+        let custom: [String: Any] = [
+            "61": ["enabled": 1, "value": ["parameters": [65535, 19, 1_179_648], "type": "standard"]]
+        ]
+        XCTAssertTrue(!controlOption.conflictsWithSystem(custom), "A remapped system shortcut no longer conflicts")
+        XCTAssertTrue(commandShift2.conflictsWithSystem(custom), "Remapped system shortcut conflicts with the new keys")
+        let functionFlag: [String: Any] = [
+            "200": ["enabled": true, "value": ["parameters": [50, 19, 1_179_648 | 8_388_608], "type": "standard"]]
+        ]
+        XCTAssertTrue(commandShift2.conflictsWithSystem(functionFlag), "Unrelated modifier bits are ignored")
+        XCTAssertTrue(!Shortcut.named("control-shift-space").conflictsWithSystem(nil))
+        XCTAssertTrue(!commandShift2.conflictsWithSystem(nil))
+        XCTAssertEqual(Set(Shortcut.all.map(\.id)).count, Shortcut.all.count)
+    }
 }
 
 let tests = LensCoreTests()
@@ -129,8 +165,10 @@ let cases: [(String, () throws -> Void)] = [
     ("multipart bytes", tests.testMultipartPreservesImageBytes),
     ("redirect validation", tests.testRedirectValidation),
     ("text URL encoding", tests.testTextURLsPreserveSpecialCharacters),
-    ("Chrome selection rejects missing and non-Chrome apps", tests.testChromeSelectionFailsExplicitly),
-    ("crop selects top image rows", tests.testCropUsesTopImageRows)
+    ("Browser uses macOS default and rejects missing or non-browser apps", tests.testBrowserSelection),
+    ("crop selects top image rows", tests.testCropUsesTopImageRows),
+    ("tiny selections are rejected", tests.testTinySelectionsAreRejected),
+    ("shortcut conflicts with macOS keyboard shortcuts", tests.testShortcutSystemConflicts)
 ]
 for (name, test) in cases {
     let before = failures

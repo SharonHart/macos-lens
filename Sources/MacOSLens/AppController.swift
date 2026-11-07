@@ -17,16 +17,16 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var busy = false
     private var hotKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
-    private var chromeField: NSTextField?
+    private var browserField: NSTextField?
     private let defaults = UserDefaults.standard
     private let speech = AVSpeechSynthesizer()
 
-    private var shortcutIndex: Int { defaults.integer(forKey: "shortcut") }
-    private let shortcuts: [(String, UInt32, UInt32)] = [
-        ("Control + Option + Space", UInt32(kVK_Space), UInt32(controlKey | optionKey)),
-        ("Control + Shift + Space", UInt32(kVK_Space), UInt32(controlKey | shiftKey)),
-        ("Command + Shift + 2", UInt32(kVK_ANSI_2), UInt32(cmdKey | shiftKey))
-    ]
+    private var shortcut: Shortcut { Shortcut.named(defaults.string(forKey: "shortcutID")) }
+
+    private func systemHotKeys() -> [String: Any]? {
+        CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString,
+                                  "com.apple.symbolichotkeys" as CFString) as? [String: Any]
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -86,8 +86,19 @@ final class AppController: NSObject, NSApplicationDelegate {
                 return
             }
         }
-        let shortcut = shortcuts[min(max(shortcutIndex, 0), shortcuts.count - 1)]
-        let result = RegisterEventHotKey(shortcut.1, shortcut.2,
+        let shortcut = self.shortcut
+        status.button?.toolTip = "Search screen (\(shortcut.title)); right-click for text, settings and quit"
+        guard !shortcut.conflictsWithSystem(systemHotKeys()) else {
+            showError(LensError.message("\(shortcut.title) is already used by a macOS keyboard shortcut, such as " +
+                                       "input-source switching. Choose another shortcut in Settings."))
+            return
+        }
+        var modifiers: UInt32 = 0
+        if shortcut.modifiers & Shortcut.command != 0 { modifiers |= UInt32(cmdKey) }
+        if shortcut.modifiers & Shortcut.shift != 0 { modifiers |= UInt32(shiftKey) }
+        if shortcut.modifiers & Shortcut.option != 0 { modifiers |= UInt32(optionKey) }
+        if shortcut.modifiers & Shortcut.control != 0 { modifiers |= UInt32(controlKey) }
+        let result = RegisterEventHotKey(shortcut.keyCode, modifiers,
                                         EventHotKeyID(signature: 0x4c454e53, id: 1),
                                         GetApplicationEventTarget(), 0, &hotKey)
         if result != noErr {
@@ -102,13 +113,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         if mode == .search {
-            do { _ = try chromeURL() } catch { showError(error); return }
+            do { _ = try browserURL() } catch { showError(error); return }
         }
         guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            showError(LensError.message("Enable macOS Lens in System Settings → Privacy & Security → " +
-                                       "Screen & System Audio Recording, then quit and reopen the app if macOS asks. " +
-                                       "No screen image was uploaded."))
+            requestScreenRecording()
             return
         }
         previousApp = NSWorkspace.shared.frontmostApplication
@@ -170,7 +178,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         let browser: URL?
-        do { browser = mode == .search ? try chromeURL() : nil }
+        do { browser = mode == .search ? try browserURL() : nil }
         catch { showError(error); return }
         dismiss()
         busy = true
@@ -191,7 +199,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                     resultWindow?.makeKeyAndOrderFront(nil)
                 } else {
                     let result = try await LensUpload.upload(image)
-                    if let browser { try await ChromeBrowser.open(result, in: browser) }
+                    if let browser { try await Browser.open(result, in: browser) }
                 }
             } catch { showError(error) }
             busy = false
@@ -199,8 +207,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func chromeURL() throws -> URL {
-        try ChromeBrowser.applicationURL(preferredPath: defaults.string(forKey: "chromePath"))
+    private func browserURL() throws -> URL {
+        try Browser.applicationURL(preferredPath: defaults.string(forKey: "browserPath"))
+    }
+
+    private func browserDescription() -> String {
+        if let path = defaults.string(forKey: "browserPath"), !path.isEmpty {
+            return Browser.name(of: URL(fileURLWithPath: path))
+        }
+        guard let url = Browser.defaultApplication() else { return "Default browser (none set in macOS)" }
+        return "Default browser (\(Browser.name(of: url)))"
     }
 
     private func textAction(_ action: String, text: String) {
@@ -229,14 +245,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         default:
             let alert = NSAlert()
             alert.messageText = action == "Translate" ? "Send selected text to Google Translate?" : "Search selected text with Google?"
-            alert.informativeText = "Only the selected text will be sent, in your chosen Chrome. OCR itself runs locally."
+            alert.informativeText = "Only the selected text will be sent, opened in \(browserDescription()). OCR itself runs locally."
             alert.addButton(withTitle: "Continue")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             Task {
                 do {
                     let url = action == "Translate" ? SearchURL.translate(text) : SearchURL.text(text)
-                    try await ChromeBrowser.open(url, in: chromeURL())
+                    try await Browser.open(url, in: browserURL())
                 } catch { showError(error) }
             }
         }
@@ -250,6 +266,35 @@ final class AppController: NSObject, NSApplicationDelegate {
         alert.messageText = "macOS Lens"
         alert.informativeText = error.localizedDescription
         alert.runModal()
+    }
+
+    private func requestScreenRecording() {
+        busy = true
+        CGRequestScreenCaptureAccess()
+        Task {
+            // A ScreenCaptureKit request adds the app to the Screen Recording list when the CoreGraphics prompt does not.
+            _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            busy = false
+            showScreenRecordingHelp()
+        }
+    }
+
+    private func showScreenRecordingHelp() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Screen Recording permission needed"
+        alert.informativeText = "Turn on macOS Lens in System Settings → Privacy & Security → " +
+                                "Screen & System Audio Recording, then quit and reopen macOS Lens. " +
+                                "Nothing was captured or uploaded."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        else { return }
+        if !NSWorkspace.shared.open(url) {
+            showError(LensError.message("System Settings could not be opened. Open Privacy & Security manually."))
+        }
     }
 
     @objc private func showSettings() {
@@ -273,27 +318,37 @@ final class AppController: NSObject, NSApplicationDelegate {
         label("Use the menu-bar viewfinder or a global shortcut. Drag a rectangle or draw around an area. " +
               "Release to search; hold Option to adjust first. Escape returns to your previous app.", y: 333, height: 56)
         label("Screen capture and Apple Vision OCR stay in memory on this Mac. Visual search sends ONLY your " +
-              "chosen crop to Google. No Chrome cookies are read and no public image host is used.", y: 268, height: 56)
+              "chosen crop to Google. No browser cookies are read and no public image host is used.", y: 268, height: 56)
         let checkbox = NSButton(checkboxWithTitle: "Enable experimental Google Lens image upload", target: self,
                                 action: #selector(toggleUpload(_:)))
         checkbox.frame = NSRect(x: 24, y: 240, width: 550, height: 24)
         checkbox.state = defaults.bool(forKey: "experimentalUpload") ? .on : .off
         root.addSubview(checkbox)
         label("This uses an undocumented Google endpoint, not an official API. It can stop working. " +
-              "Results open in Chrome, not an Android-style embedded result sheet.", y: 190, height: 42)
-        label("Chrome application", y: 161)
-        let chrome = NSTextField(labelWithString: defaults.string(forKey: "chromePath") ?? "Google Chrome (installed default)")
-        chrome.frame = NSRect(x: 24, y: 134, width: 430, height: 24)
-        chrome.lineBreakMode = .byTruncatingMiddle
-        chromeField = chrome
-        root.addSubview(chrome)
-        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseChrome))
-        choose.frame = NSRect(x: 464, y: 132, width: 110, height: 28)
+              "Results open in your browser, not an Android-style embedded result sheet.", y: 190, height: 42)
+        label("Browser", y: 161)
+        let browser = NSTextField(labelWithString: browserDescription())
+        browser.frame = NSRect(x: 24, y: 134, width: 318, height: 24)
+        browser.lineBreakMode = .byTruncatingMiddle
+        browserField = browser
+        root.addSubview(browser)
+        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseBrowser))
+        choose.frame = NSRect(x: 352, y: 132, width: 110, height: 28)
         root.addSubview(choose)
+        let useDefault = NSButton(title: "Use default", target: self, action: #selector(useDefaultBrowser))
+        useDefault.frame = NSRect(x: 464, y: 132, width: 110, height: 28)
+        root.addSubview(useDefault)
         label("Global shortcut", y: 99)
         let popup = NSPopUpButton(frame: NSRect(x: 24, y: 70, width: 300, height: 28))
-        popup.addItems(withTitles: shortcuts.map(\.0))
-        popup.selectItem(at: min(max(shortcutIndex, 0), shortcuts.count - 1))
+        popup.autoenablesItems = false
+        let systemKeys = systemHotKeys()
+        for option in Shortcut.all {
+            let used = option.conflictsWithSystem(systemKeys)
+            popup.addItem(withTitle: used ? "\(option.title) — used by macOS" : option.title)
+            popup.lastItem?.representedObject = option.id
+            popup.lastItem?.isEnabled = !used
+        }
+        popup.selectItem(at: Shortcut.all.firstIndex(of: shortcut) ?? 0)
         popup.target = self
         popup.action = #selector(changeShortcut(_:))
         root.addSubview(popup)
@@ -314,11 +369,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func changeShortcut(_ sender: NSPopUpButton) {
-        defaults.set(sender.indexOfSelectedItem, forKey: "shortcut")
+        guard let id = sender.selectedItem?.representedObject as? String else { return }
+        defaults.set(id, forKey: "shortcutID")
         registerShortcut()
     }
 
-    @objc private func chooseChrome() {
+    @objc private func chooseBrowser() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -326,14 +382,17 @@ final class AppController: NSObject, NSApplicationDelegate {
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.allowedContentTypes = [.application]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let bundle = Bundle(url: url), ["com.google.Chrome", "com.google.Chrome.beta",
-                                             "com.google.Chrome.dev", "com.google.Chrome.canary"]
-            .contains(bundle.bundleIdentifier ?? "") else {
-            showError(LensError.message("Choose a Google Chrome application, not another browser."))
+        guard Browser.opensWebLinks(url) else {
+            showError(LensError.message("\(Browser.name(of: url)) cannot open web links. Choose a web browser."))
             return
         }
-        defaults.set(url.path, forKey: "chromePath")
-        chromeField?.stringValue = url.path
+        defaults.set(url.path, forKey: "browserPath")
+        browserField?.stringValue = browserDescription()
+    }
+
+    @objc private func useDefaultBrowser() {
+        defaults.removeObject(forKey: "browserPath")
+        browserField?.stringValue = browserDescription()
     }
 
     @objc private func saveSettings() {

@@ -36,6 +36,7 @@ final class OverlayView: NSView {
     private var resizingCorner: Int?
     private var fixedCorner: CGPoint?
     private var tracking: NSTrackingArea?
+    private var hint: String?
 
     init(frame: NSRect, image: CGImage, mode: CaptureMode,
          submit: @escaping (CGImage, CaptureMode) -> Void, cancel: @escaping () -> Void,
@@ -122,10 +123,11 @@ final class OverlayView: NSView {
         gradient.draw(in: NSBezierPath(rect: NSRect(x: 0, y: bounds.height - 5, width: bounds.width, height: 5)), angle: 0)
         gradient.draw(in: NSBezierPath(rect: NSRect(x: 0, y: 0, width: 5, height: bounds.height)), angle: 90)
         gradient.draw(in: NSBezierPath(rect: NSRect(x: bounds.width - 5, y: 0, width: 5, height: bounds.height)), angle: 90)
-        let instruction = "Drag or draw to select · Release to \(mode == .search ? "search" : "read text") · " +
-                          "Hold Option to adjust · Return confirms · Esc cancels"
+        let instruction = hint ?? "Drag or draw to select · Release to \(mode == .search ? "search" : "read text") · " +
+                                  "Hold Option to adjust · Return confirms · Esc cancels"
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .medium), .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 14, weight: .medium),
+            .foregroundColor: hint == nil ? NSColor.white : NSColor.systemYellow,
             .backgroundColor: NSColor.black.withAlphaComponent(0.6)
         ]
         let size = (instruction as NSString).size(withAttributes: attributes)
@@ -139,6 +141,7 @@ final class OverlayView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         start = point
         points = [point]
+        hint = nil
         resizingCorner = nil
         fixedCorner = nil
         if let selection, let index = corners(selection).firstIndex(where: { hypot($0.x - point.x, $0.y - point.y) < 14 }) {
@@ -175,7 +178,13 @@ final class OverlayView: NSView {
         start = nil
         points.removeAll()
         needsDisplay = true
-        if !event.modifierFlags.contains(.option) && resizingCorner == nil { complete() }
+        guard resizingCorner == nil else { return }
+        guard Selection.isUsable(selection) else {
+            selection = nil
+            showSelectionHint()
+            return
+        }
+        if !event.modifierFlags.contains(.option) { complete() }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -185,9 +194,14 @@ final class OverlayView: NSView {
     }
 
     private func complete() {
-        guard let selection else { failure(LensError.message("Drag or draw around an area first.")); return }
+        guard let selection, Selection.isUsable(selection) else { showSelectionHint(); return }
         do { submit(try Selection.crop(image, region: selection, bounds: bounds), mode) }
         catch { failure(error) }
+    }
+
+    private func showSelectionHint() {
+        hint = "Drag or draw around an area to select it · Esc cancels"
+        needsDisplay = true
     }
 
     private func corners(_ rect: CGRect) -> [CGPoint] {

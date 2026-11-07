@@ -42,7 +42,7 @@ public enum LensUpload {
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.queryItems?.contains(where: { $0.name == "vsrid" && !($0.value ?? "").isEmpty }) == true else {
             throw LensError.message("Google Lens did not return a valid visual-search result (HTTP \(status)). " +
-                                    "Its undocumented upload service may have changed. Nothing was opened in Chrome.")
+                                    "Its undocumented upload service may have changed. Nothing was opened in your browser.")
         }
         return url
     }
