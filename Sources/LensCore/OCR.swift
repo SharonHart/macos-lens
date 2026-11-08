@@ -22,6 +22,18 @@ public enum OCR {
         }
     }
 
+    /// Text lines and salient objects near a tap, found on this Mac with Apple Vision. This approximates
+    /// Android's tap-to-select; it is not Google's segmentation. Boxes are normalized with a bottom-left origin.
+    public static func tapCandidates(_ image: CGImage) throws -> (text: [CGRect], objects: [CGRect]) {
+        let text = VNRecognizeTextRequest()
+        text.recognitionLevel = .fast
+        text.usesLanguageCorrection = false
+        let objects = VNGenerateObjectnessBasedSaliencyImageRequest()
+        try VNImageRequestHandler(cgImage: image).perform([text, objects])
+        return ((text.results ?? []).map(\.boundingBox),
+                (objects.results ?? []).flatMap { ($0.salientObjects ?? []).map(\.boundingBox) })
+    }
+
     public static func fixture() throws -> CGImage {
         let image = NSImage(size: NSSize(width: 640, height: 240))
         image.lockFocus()

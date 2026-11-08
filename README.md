@@ -5,7 +5,7 @@ Requires macOS 14 or newer and the Xcode Command Line Tools with Swift 5.10 or n
 ```sh
 swift run LensCoreTests
 swift build
-.build/debug/MacOSLens --self-test-native
+.build/debug/MacOSLens --self-test-native [snapshot.png]   # offscreen overlay checks; optional renders
 bash scripts/build-app.sh
 open "dist/macOS Lens.app"
 ```

@@ -24,30 +24,32 @@ enum OverlayCheck {
         print("PASS whole-display selection searched after the debounce: \(first.absoluteString.prefix(70))…")
 
         let wholeKey = view.searchKey
-        let canvas = view.canvas
+        let brackets = view.bracketFrame ?? view.bounds
+        try expect(view.panelShown, "the results sheet slid in for the whole-screen search")
         func mouse(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
             NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                                windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                                clickCount: 1, pressure: 1)!
         }
-        let start = CGPoint(x: canvas.maxX, y: canvas.midY)
+        let start = CGPoint(x: brackets.maxX, y: brackets.midY)
+        try expect(view.hitTest(start) === view, "the right bracket is reachable beside the results sheet")
         view.mouseDown(with: mouse(.leftMouseDown, start))
         for step in 1...4 {
             view.mouseDragged(with: mouse(.leftMouseDragged,
-                                          CGPoint(x: start.x - canvas.width * 0.1 * CGFloat(step), y: start.y)))
+                                          CGPoint(x: start.x - brackets.width * 0.1 * CGFloat(step), y: start.y)))
         }
-        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: start.x - canvas.width * 0.4, y: start.y)))
+        view.mouseUp(with: mouse(.leftMouseUp, CGPoint(x: start.x - brackets.width * 0.4, y: start.y)))
         try expect(view.searchKey != wholeKey && controller.searchState == .waiting,
                    "resizing with the right-edge handle schedules a new debounced search")
         let second = try await results(controller, panel)
         try expect(second != first, "the resized selection got its own results")
         print("PASS right-edge resize searched the new area: \(view.searchKey ?? "none")")
 
-        view.selectWholeDisplay()
+        view.selectWholeScreen()
         try expect(controller.searchState == .loaded(first), "returning to a searched area reuses its results")
         try await settle(panel)
-        try expect(panel.webView?.url == first, "the panel shows the reused results")
-        print("PASS Full screen reused the earlier results without another upload")
+        try expect(panel.webView?.url == first, "the sheet shows the reused results")
+        print("PASS Command-A reused the earlier results without another upload")
         print("PANEL_STATUS \(panel.statusLabel.stringValue)")
     }
 

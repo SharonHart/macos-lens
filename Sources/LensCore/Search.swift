@@ -6,11 +6,28 @@ public enum SearchURL {
         make(host: "www.google.com", path: "/search", items: [URLQueryItem(name: "q", value: text)])
     }
 
-    public static func translate(_ text: String) -> URL {
+    public static let translateLimit = 5000
+
+    /// Google Translate for `text` into `language`; long text is cut to Translate's own input limit.
+    public static func translate(_ text: String, to language: String = "en") -> URL {
         make(host: "translate.google.com", path: "/", items: [
-            URLQueryItem(name: "sl", value: "auto"), URLQueryItem(name: "tl", value: "en"),
-            URLQueryItem(name: "text", value: text), URLQueryItem(name: "op", value: "translate")
+            URLQueryItem(name: "sl", value: "auto"), URLQueryItem(name: "tl", value: language),
+            URLQueryItem(name: "text", value: String(text.prefix(translateLimit))),
+            URLQueryItem(name: "op", value: "translate")
         ])
+    }
+
+    /// The Google Translate code for a macOS language identifier such as "en-GB", "zh-Hant-TW" or "he-IL".
+    public static func translateLanguage(for identifier: String?) -> String {
+        guard let identifier, !identifier.isEmpty else { return "en" }
+        let parts = identifier.replacingOccurrences(of: "_", with: "-").split(separator: "-").map(String.init)
+        let code = parts[0].lowercased()
+        switch code {
+        case "zh": return parts.contains("Hant") || parts.contains("TW") || parts.contains("HK") ? "zh-TW" : "zh-CN"
+        case "he": return "iw"
+        case "nb", "nn": return "no"
+        default: return code
+        }
     }
 
     private static func make(host: String, path: String, items: [URLQueryItem]) -> URL {
@@ -37,6 +54,23 @@ public enum LensUpload {
     static let rateLimited = LensError.message(
         "Google is limiting requests from this Mac (HTTP 429). Nothing was retried automatically. " +
         "Wait a few minutes, then press Return to search again.")
+
+    /// Adds typed words to a visual-search result, like Lens multisearch's "Add to your search".
+    /// An empty query removes the refinement and returns the plain visual-search results.
+    public static func refined(_ url: URL, query: String) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        let items = (components.queryItems ?? []).filter { $0.name != "q" }
+        components.queryItems = items.isEmpty ? nil : items
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            var allowed = CharacterSet.urlQueryAllowed
+            allowed.remove(charactersIn: "+&=#")
+            let value = "q=" + (text.addingPercentEncoding(withAllowedCharacters: allowed) ?? "")
+            components.percentEncodedQuery = [components.percentEncodedQuery, value].compactMap { $0 }
+                .joined(separator: "&")
+        }
+        return components.url ?? url
+    }
 
     public static func isResult(_ url: URL) -> Bool {
         guard url.scheme == "https", ["www.google.com", "google.com"].contains(url.host ?? ""),

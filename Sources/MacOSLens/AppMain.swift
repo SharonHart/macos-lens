@@ -5,8 +5,9 @@ import LensCore
 struct AppMain {
     @MainActor
     static func main() {
-        if CommandLine.arguments.contains("--self-test-native") {
-            exit(NativeChecks.run() ? 0 : 1)
+        if let index = CommandLine.arguments.firstIndex(of: "--self-test-native") {
+            let output = CommandLine.arguments.dropFirst(index + 1).first.map { URL(fileURLWithPath: $0) }
+            exit(NativeChecks.run(snapshot: output) ? 0 : 1)
         }
         if CommandLine.arguments.contains("--integration-fixture") {
             Task {

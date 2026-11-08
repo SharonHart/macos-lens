@@ -18,6 +18,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
     private var lastExternalApp: NSRunningApplication?
     private var busy = false
+    /// Bumped on every activation and dismissal so late OCR results from an old overlay are ignored.
+    private var session = 0
+    private var lastActivation = Date.distantPast
+    /// The user wants the results sheet: set by each new selection, cleared when they hide the sheet.
+    private var wantsPanel = false
+    /// The sheet is showing a translation, so live-search updates must not replace it.
+    private var translating = false
     private var liveSearch: LiveSearch<String>?
     private weak var panelView: OverlayView?
     private weak var selectedView: OverlayView?
@@ -60,8 +67,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         if !defaults.bool(forKey: "onboarded") { showSettings() }
     }
 
+    /// Opening the app again from Finder or Spotlight shows the launcher, but never as a side effect of the shortcut.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if overlays.isEmpty && !busy { showLauncher() }
+        if overlays.isEmpty && !busy && Date().timeIntervalSince(lastActivation) > 2 { showLauncher() }
         return false
     }
 
@@ -142,8 +150,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == NSRunningApplication.current ? lastExternalApp : front
+        lastActivation = Date()
+        session += 1
         settingsWindow?.orderOut(nil)
-        launcherWindow?.orderOut(nil)
+        launcherWindow?.close()
         resultWindow?.orderOut(nil)
         busy = true
         Task {
@@ -185,18 +195,21 @@ final class AppController: NSObject, NSApplicationDelegate {
         let active = frames.firstIndex(where: { $0.0.frame.contains(mouse) }) ?? 0
         let search = LiveSearch<String>()
         liveSearch = search
+        wantsPanel = false
+        translating = false
         var actions = OverlayActions()
         actions.began = { [weak self] _ in self?.liveSearch?.postpone() }
         actions.changed = { [weak self] view, immediately in self?.selectionChanged(view, immediately: immediately) }
         actions.text = { [weak self] view in self?.readText(from: view) }
+        actions.translate = { [weak self] view in self?.translate(from: view) }
+        actions.refine = { [weak self] view, query in self?.refine(view, query: query) }
         actions.panelVisibility = { [weak self] _, visible in self?.panelVisibilityChanged(visible) }
         actions.cancel = { [weak self] in self?.dismiss() }
         overlays = frames.enumerated().map { index, frame in
             let (screen, image) = frame
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
                                    displayIndex: index, mode: mode, topInset: screen.safeAreaInsets.top,
-                                   selected: index == active, showsPanel: index == active,
-                                   panelCollapsed: mode == .text, actions: actions)
+                                   selected: index == active, controls: index == active, actions: actions)
             return OverlayWindow(screen: screen, overlay: view, escape: { [weak self] in self?.dismiss() })
         }
         let main = overlays[active].overlay
@@ -204,12 +217,14 @@ final class AppController: NSObject, NSApplicationDelegate {
         selectedView = main
         main.panel?.onAllow = { [weak self] in self?.allowVisualSearch() }
         main.panel?.onOpen = { [weak self] url in self?.openInBrowser(url) }
+        main.panel?.onDismiss = { [weak self] in self?.dismiss() }
         search.onChange = { [weak self] state in self?.liveSearchChanged(state) }
         NSApp.activate(ignoringOtherApps: true)
         for window in overlays { window.orderFrontRegardless() }
         overlays[active].makeKey()
+        for window in overlays { window.overlay.playIntro() }
         refreshPanel()
-        // The whole-display selection is searched after the debounce unless the user starts adjusting it first.
+        // The whole-screen selection is searched after the debounce unless the user starts selecting first.
         if mode == .search { selectionChanged(main, immediately: false) }
     }
 
@@ -218,13 +233,24 @@ final class AppController: NSObject, NSApplicationDelegate {
     var activeOverlay: OverlayView? { panelView }
 
     private func refreshPanel() {
-        guard let liveSearch else { return }
+        guard let liveSearch, !translating else { return }
         panelView?.panel?.update(liveSearch.state, allowed: uploadAllowed)
+    }
+
+    /// The sheet slides in once there is something to show: an upload, results, an error or the privacy disclosure.
+    private func revealPanelIfWanted() {
+        guard wantsPanel, let panelView, let liveSearch else { return }
+        switch liveSearch.state {
+        case .uploading, .loaded, .failed: panelView.revealPanel()
+        case .idle, .waiting: if !uploadAllowed { panelView.revealPanel() }
+        }
     }
 
     private func liveSearchChanged(_ state: LiveSearchState) {
         refreshPanel()
-        panelView?.setActivity(state == .uploading ? "Uploading selected area to Google…" : nil)
+        panelView?.setBusy(state == .uploading)
+        panelView?.setActivity(state == .uploading ? "Uploading the selected area to Google…" : nil)
+        revealPanelIfWanted()
     }
 
     func selectionChanged(_ view: OverlayView, immediately: Bool) {
@@ -234,31 +260,91 @@ final class AppController: NSObject, NSApplicationDelegate {
             selectedView = view
         }
         guard let target = view.hasSelection ? view : selectedView, target.hasSelection else {
-            view.showWarning("Drag to select an area first")
+            view.showWarning("Circle, highlight or tap something first")
             return
         }
-        guard let panelView, let liveSearch else { return }
-        if immediately { panelView.setPanelCollapsed(false) }
-        guard !panelView.panelCollapsed else { return }
+        // Reading text never uploads; it searches only when explicitly asked.
+        if view.mode == .text && !immediately { return }
+        guard let panelView, let liveSearch, let panel = panelView.panel else { return }
+        translating = false
+        wantsPanel = true
         guard uploadAllowed else {
             refreshPanel()
+            revealPanelIfWanted()
             return
         }
         guard let key = target.searchKey, let crop = try? target.crop() else {
             target.showWarning("Select an area at least \(Int(Selection.minimumSide)) points wide and high")
             return
         }
-        guard let panel = panelView.panel else { return }
         liveSearch.schedule(key, immediately: immediately) {
             try await panel.search(LensUpload.request(for: crop))
+        }
+        // A cached result doesn't change the state, but the sheet may be showing a translation.
+        refreshPanel()
+        revealPanelIfWanted()
+    }
+
+    /// Words typed in the search bar refine the visual search, like Android's multisearch.
+    private func refine(_ view: OverlayView, query: String) {
+        guard let panelView, let panel = panelView.panel else { return }
+        panel.refinement = query
+        if case .loaded = liveSearch?.state, uploadAllowed {
+            translating = false
+            wantsPanel = true
+            refreshPanel()
+            revealPanelIfWanted()
+        } else {
+            selectionChanged(selectedView ?? view, immediately: true)
         }
     }
 
     private func panelVisibilityChanged(_ visible: Bool) {
+        wantsPanel = visible
         if visible {
             if let selectedView { selectionChanged(selectedView, immediately: false) }
         } else {
             liveSearch?.cancel()
+        }
+    }
+
+    /// Recognizes the selected text on this Mac and offers to translate it in the sheet; nothing is sent until
+    /// the user confirms, and then only the text.
+    private func translate(from view: OverlayView) {
+        guard let target = view.hasSelection ? view : selectedView, let crop = try? target.crop(),
+              let panelView, let panel = panelView.panel else {
+            view.showWarning("Circle the text you want to translate first")
+            return
+        }
+        let current = session
+        panelView.setActivity("Reading text on this Mac…")
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { Result { try OCR.recognize(crop) } }.value
+            guard current == session, self.panelView === panelView else { return }
+            panelView.setActivity(nil)
+            let text: String
+            switch result {
+            case .success(let lines):
+                text = lines.map(\.text).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            case .failure(let error):
+                panelView.showWarning("Text recognition failed: \(error.localizedDescription)")
+                return
+            }
+            guard !text.isEmpty else {
+                panelView.showWarning("No text found in the selection to translate")
+                return
+            }
+            translating = true
+            wantsPanel = true
+            liveSearch?.cancel()
+            panel.confirmTranslation(text: text, onConfirm: { [weak panel] in
+                let language = SearchURL.translateLanguage(for: Locale.preferredLanguages.first)
+                panel?.showPage(SearchURL.translate(text, to: language), title: "Google Translate")
+            }, onCancel: { [weak self] in
+                self?.translating = false
+                self?.refreshPanel()
+            })
+            panelView.revealPanel()
         }
     }
 
@@ -284,13 +370,16 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func readText(from view: OverlayView) {
         guard let target = view.hasSelection ? view : selectedView, let crop = try? target.crop() else {
-            view.showWarning("Drag to select an area first")
+            view.showWarning("Circle or highlight some text first")
             return
         }
         recognizeText(crop)
     }
 
     func dismiss(restore: Bool = true) {
+        session += 1
+        wantsPanel = false
+        translating = false
         liveSearch?.onChange = nil
         liveSearch?.cancel()
         liveSearch = nil
@@ -368,7 +457,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             Task {
                 do {
-                    let url = action == "Translate" ? SearchURL.translate(text) : SearchURL.text(text)
+                    let language = SearchURL.translateLanguage(for: Locale.preferredLanguages.first)
+                    let url = action == "Translate" ? SearchURL.translate(text, to: language) : SearchURL.text(text)
                     try await Browser.open(url, in: browserURL())
                 } catch { showError(error) }
             }
@@ -479,13 +569,14 @@ final class AppController: NSObject, NSApplicationDelegate {
             root.addSubview(field)
         }
         label("Circle to Search, adapted for your Mac", y: 452, bold: true)
-        label("Press the shortcut, Search screen in the macOS Lens window, or the menu-bar viewfinder. The " +
-              "selection starts as the whole screen: drag its edges or corners to resize it, drag inside to move " +
-              "it, or drag across the screen (or use Draw) for a new area. Escape returns to your previous app.",
-              y: 372, height: 70)
+        label("Press the shortcut or use the menu-bar viewfinder. The screen freezes in place and starts fully " +
+              "selected. Circle, highlight, scribble or tap something to select it, drag the corner brackets or " +
+              "edges to adjust, and drag inside to move. Pinch or scroll with two fingers to zoom and pan. Type in " +
+              "the bottom bar to refine the search, or use Translate. Escape, ✕ or swiping the results down closes it.",
+              y: 372, height: 74)
         label("Screen capture and Apple Vision OCR stay in memory on this Mac. Visual search sends ONLY the area " +
               "inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you pause " +
-              "adjusting it. The results panel uploads with its own Google cookies (and sign-in, if you choose); your " +
+              "adjusting it. The results sheet uploads with its own Google cookies (and sign-in, if you choose); your " +
               "browser's cookies are never read and no public image host is used.", y: 300, height: 62)
         let checkbox = NSButton(checkboxWithTitle: "Allow visual search (experimental Google Lens image upload)",
                                 target: self, action: #selector(toggleUpload(_:)))
@@ -494,7 +585,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         uploadCheckbox = checkbox
         root.addSubview(checkbox)
         label("This uses an undocumented Google endpoint, not an official API, and can stop working. Results load " +
-              "in the overlay's right-hand panel, where Google may show rate-limit (429), consent or sign-in pages.",
+              "in the sheet on the right of the screen, where Google may show rate-limit (429), consent or sign-in pages.",
               y: 218, height: 44)
         label("Browser for “Open in browser” and text search", y: 187)
         let browser = NSTextField(labelWithString: browserDescription())

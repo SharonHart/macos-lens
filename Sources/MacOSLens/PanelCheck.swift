@@ -40,6 +40,20 @@ enum PanelCheck {
         let cached = await self.thumbnail(web)
         print("PANEL_CACHED_THUMBNAIL \(cached)")
 
+        // Typed words refine the visual search through the results URL's `q` parameter (multisearch).
+        let refined = LensUpload.refined(url, query: "red sign")
+        panel.load(refined)
+        try await settle(web)
+        let refinedThumbnail = await self.thumbnail(web)
+        let box = await evaluate(web, "(document.querySelector('textarea[name=q], input[name=q]') || {}).value || ''")
+        let keepsImage = web.url.map(LensUpload.isResult) == true
+        print("PANEL_REFINED title=\(await evaluate(web, "document.title")) box=\(box) thumbnail=\(refinedThumbnail) " +
+              "keepsVisualResult=\(keepsImage)")
+        print("PANEL_REFINED_TEXT \(await evaluate(web, "document.body ? document.body.innerText.slice(0, 300) : ''").replacingOccurrences(of: "\n", with: " | "))")
+        if let snapshot {
+            try await save(web, to: snapshot.deletingPathExtension().appendingPathExtension("refined.png"))
+        }
+
         // Cancellation uses an unroutable documentation address (RFC 5737), so nothing reaches Google.
         var request = URLRequest(url: URL(string: "http://192.0.2.1/")!)
         request.timeoutInterval = 20
