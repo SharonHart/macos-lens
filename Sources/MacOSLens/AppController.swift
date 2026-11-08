@@ -13,7 +13,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var overlays: [OverlayWindow] = []
     private var resultWindow: TextWindow?
     private var settingsWindow: NSWindow?
+    private var launcherWindow: NSWindow?
+    private var launcherShortcutField: NSTextField?
     private var previousApp: NSRunningApplication?
+    private var lastExternalApp: NSRunningApplication?
     private var busy = false
     private var hotKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
@@ -41,8 +44,27 @@ final class AppController: NSObject, NSApplicationDelegate {
         status.button?.action = #selector(statusClicked)
         status.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         status.button?.toolTip = "Search screen; right-click for text, settings and quit"
+        if let front = NSWorkspace.shared.frontmostApplication, front != NSRunningApplication.current {
+            lastExternalApp = front
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(applicationActivated(_:)),
+                                                          name: NSWorkspace.didActivateApplicationNotification,
+                                                          object: nil)
         registerShortcut()
+        // The menu-bar item can be hidden by the notch or menu-bar settings, so every launch shows a window.
+        showLauncher()
         if !defaults.bool(forKey: "onboarded") { showSettings() }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if overlays.isEmpty && !busy { showLauncher() }
+        return false
+    }
+
+    @objc private func applicationActivated(_ notification: Notification) {
+        guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app != NSRunningApplication.current else { return }
+        lastExternalApp = app
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -88,6 +110,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         let shortcut = self.shortcut
         status.button?.toolTip = "Search screen (\(shortcut.title)); right-click for text, settings and quit"
+        launcherShortcutField?.stringValue = "Shortcut: \(shortcut.title)"
         guard !shortcut.conflictsWithSystem(systemHotKeys()) else {
             showError(LensError.message("\(shortcut.title) is already used by a macOS keyboard shortcut, such as " +
                                        "input-source switching. Choose another shortcut in Settings."))
@@ -119,8 +142,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             requestScreenRecording()
             return
         }
-        previousApp = NSWorkspace.shared.frontmostApplication
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front == NSRunningApplication.current ? lastExternalApp : front
         settingsWindow?.orderOut(nil)
+        launcherWindow?.orderOut(nil)
         resultWindow?.orderOut(nil)
         busy = true
         Task {
@@ -297,10 +322,57 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func showLauncher() {
+        if launcherWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 250),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "macOS Lens"
+            window.isReleasedWhenClosed = false
+            let root = window.contentView!
+            let heading = NSTextField(labelWithString: "macOS Lens is running")
+            heading.font = .boldSystemFont(ofSize: 16)
+            heading.frame = NSRect(x: 24, y: 206, width: 392, height: 24)
+            root.addSubview(heading)
+            let shortcutField = NSTextField(labelWithString: "")
+            shortcutField.frame = NSRect(x: 24, y: 182, width: 392, height: 20)
+            launcherShortcutField = shortcutField
+            root.addSubview(shortcutField)
+            let hint = NSTextField(wrappingLabelWithString:
+                "Can't see the viewfinder icon in the menu bar? It may be hidden behind the camera notch " +
+                "or turned off in System Settings → Menu Bar. Open macOS Lens again from Finder or " +
+                "Spotlight to show this window.")
+            hint.textColor = .secondaryLabelColor
+            hint.frame = NSRect(x: 24, y: 104, width: 392, height: 70)
+            root.addSubview(hint)
+            func button(_ title: String, _ action: Selector, x: CGFloat, y: CGFloat) -> NSButton {
+                let button = NSButton(title: title, target: self, action: action)
+                button.frame = NSRect(x: x, y: y, width: 190, height: 32)
+                root.addSubview(button)
+                return button
+            }
+            button("Search screen…", #selector(searchScreen), x: 24, y: 60).keyEquivalent = "\r"
+            _ = button("Extract screen text…", #selector(extractScreen), x: 226, y: 60)
+            _ = button("Settings & privacy…", #selector(showSettings), x: 24, y: 20)
+            _ = button("Quit macOS Lens", #selector(quit), x: 226, y: 20)
+            launcherWindow = window
+            window.center()
+        }
+        launcherShortcutField?.stringValue = "Shortcut: \(shortcut.title)"
+        present(launcherWindow)
+    }
+
+    // An accessory app opened in the background is not activated on macOS 14+, so its windows would stay behind others.
+    private func present(_ window: NSWindow?) {
+        guard let window else { return }
+        window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
+        NSApp.activate(ignoringOtherApps: true)
+        window.orderFrontRegardless()
+        window.makeKey()
+    }
+
     @objc private func showSettings() {
         if let settingsWindow {
-            NSApp.activate(ignoringOtherApps: true)
-            settingsWindow.makeKeyAndOrderFront(nil)
+            present(settingsWindow)
             return
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 450),
@@ -360,8 +432,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         root.addSubview(text)
         settingsWindow = window
         window.center()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        present(window)
     }
 
     @objc private func toggleUpload(_ sender: NSButton) {
