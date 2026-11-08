@@ -18,6 +18,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var previousApp: NSRunningApplication?
     private var lastExternalApp: NSRunningApplication?
     private var busy = false
+    private var liveSearch: LiveSearch<String>?
+    private weak var panelView: OverlayView?
+    private weak var selectedView: OverlayView?
+    private var uploadCheckbox: NSButton?
     private var hotKey: EventHotKeyRef?
     private var eventHandler: EventHandlerRef?
     private var browserField: NSTextField?
@@ -110,7 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         let shortcut = self.shortcut
         status.button?.toolTip = "Search screen (\(shortcut.title)); right-click for text, settings and quit"
-        launcherShortcutField?.stringValue = "Shortcut: \(shortcut.title)"
+        launcherShortcutField?.stringValue = "Press \(shortcut.title) anywhere to open the screen selector."
         guard !shortcut.conflictsWithSystem(systemHotKeys()) else {
             showError(LensError.message("\(shortcut.title) is already used by a macOS keyboard shortcut, such as " +
                                        "input-source switching. Choose another shortcut in Settings."))
@@ -131,13 +135,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func activate(mode: CaptureMode) {
         guard !busy, overlays.isEmpty else { return }
-        if mode == .search && !defaults.bool(forKey: "experimentalUpload") {
-            showSettings()
-            return
-        }
-        if mode == .search {
-            do { _ = try browserURL() } catch { showError(error); return }
-        }
+        // The shortcut always opens the selection overlay; only missing Screen Recording access stops it.
         guard CGPreflightScreenCaptureAccess() else {
             requestScreenRecording()
             return
@@ -150,35 +148,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         busy = true
         Task {
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                var frames: [(NSScreen, CGImage)] = []
-                let screens = NSScreen.screens
-                for screen in screens {
-                    guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
-                          let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
-                        throw LensError.message("A connected display could not be captured. Retry after the display change.")
-                    }
-                    let config = SCStreamConfiguration()
-                    config.width = Int(screen.frame.width * screen.backingScaleFactor)
-                    config.height = Int(screen.frame.height * screen.backingScaleFactor)
-                    config.showsCursor = false
-                    config.captureResolution = .best
-                    let filter = SCContentFilter(display: display, excludingWindows: [])
-                    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                    frames.append((screen, image))
-                }
-                guard !frames.isEmpty else { throw LensError.message("No displays are available.") }
+                let frames = try await captureDisplays()
                 // All screenshots are acquired before any overlay can appear in the capture.
-                overlays = frames.map { screen, image in
-                    OverlayWindow(screen: screen, image: image, mode: mode,
-                                  submit: { [weak self] crop, selectedMode in self?.submit(crop, mode: selectedMode) },
-                                  cancel: { [weak self] in self?.dismiss() },
-                                  failure: { [weak self] error in self?.showError(error) })
-                }
-                NSApp.activate(ignoringOtherApps: true)
-                for window in overlays { window.orderFrontRegardless() }
-                let mouse = NSEvent.mouseLocation
-                (overlays.first(where: { $0.frame.contains(mouse) }) ?? overlays.first)?.makeKey()
+                showOverlays(frames, mode: mode)
                 busy = false
             } catch {
                 busy = false
@@ -188,44 +160,164 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func dismiss(restore: Bool = true) {
+    private func captureDisplays() async throws -> [(NSScreen, CGImage)] {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        var frames: [(NSScreen, CGImage)] = []
+        for screen in NSScreen.screens {
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let display = content.displays.first(where: { $0.displayID == number.uint32Value }) else {
+                throw LensError.message("A connected display could not be captured. Retry after the display change.")
+            }
+            let config = SCStreamConfiguration()
+            config.width = Int(screen.frame.width * screen.backingScaleFactor)
+            config.height = Int(screen.frame.height * screen.backingScaleFactor)
+            config.showsCursor = false
+            config.captureResolution = .best
+            let filter = SCContentFilter(display: display, excludingWindows: [])
+            frames.append((screen, try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)))
+        }
+        guard !frames.isEmpty else { throw LensError.message("No displays are available.") }
+        return frames
+    }
+
+    func showOverlays(_ frames: [(NSScreen, CGImage)], mode: CaptureMode) {
+        let mouse = NSEvent.mouseLocation
+        let active = frames.firstIndex(where: { $0.0.frame.contains(mouse) }) ?? 0
+        let search = LiveSearch<String>()
+        liveSearch = search
+        var actions = OverlayActions()
+        actions.began = { [weak self] _ in self?.liveSearch?.postpone() }
+        actions.changed = { [weak self] view, immediately in self?.selectionChanged(view, immediately: immediately) }
+        actions.text = { [weak self] view in self?.readText(from: view) }
+        actions.panelVisibility = { [weak self] _, visible in self?.panelVisibilityChanged(visible) }
+        actions.cancel = { [weak self] in self?.dismiss() }
+        overlays = frames.enumerated().map { index, frame in
+            let (screen, image) = frame
+            let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
+                                   displayIndex: index, mode: mode, topInset: screen.safeAreaInsets.top,
+                                   selected: index == active, showsPanel: index == active,
+                                   panelCollapsed: mode == .text, actions: actions)
+            return OverlayWindow(screen: screen, overlay: view, escape: { [weak self] in self?.dismiss() })
+        }
+        let main = overlays[active].overlay
+        panelView = main
+        selectedView = main
+        main.panel?.onAllow = { [weak self] in self?.allowVisualSearch() }
+        main.panel?.onOpen = { [weak self] url in self?.openInBrowser(url) }
+        search.onChange = { [weak self] state in self?.liveSearchChanged(state) }
+        NSApp.activate(ignoringOtherApps: true)
+        for window in overlays { window.orderFrontRegardless() }
+        overlays[active].makeKey()
+        refreshPanel()
+        // The whole-display selection is searched after the debounce unless the user starts adjusting it first.
+        if mode == .search { selectionChanged(main, immediately: false) }
+    }
+
+    private var uploadAllowed: Bool { defaults.bool(forKey: "experimentalUpload") }
+    var searchState: LiveSearchState? { liveSearch?.state }
+    var activeOverlay: OverlayView? { panelView }
+
+    private func refreshPanel() {
+        guard let liveSearch else { return }
+        panelView?.panel?.update(liveSearch.state, allowed: uploadAllowed)
+    }
+
+    private func liveSearchChanged(_ state: LiveSearchState) {
+        refreshPanel()
+        panelView?.setActivity(state == .uploading ? "Uploading selected area to Google…" : nil)
+    }
+
+    func selectionChanged(_ view: OverlayView, immediately: Bool) {
+        guard overlays.contains(where: { $0.overlay === view }) else { return }
+        if view.hasSelection {
+            for window in overlays where window.overlay !== view { window.overlay.clearSelection() }
+            selectedView = view
+        }
+        guard let target = view.hasSelection ? view : selectedView, target.hasSelection else {
+            view.showWarning("Drag to select an area first")
+            return
+        }
+        guard let panelView, let liveSearch else { return }
+        if immediately { panelView.setPanelCollapsed(false) }
+        guard !panelView.panelCollapsed else { return }
+        guard uploadAllowed else {
+            refreshPanel()
+            return
+        }
+        guard let key = target.searchKey, let crop = try? target.crop() else {
+            target.showWarning("Select an area at least \(Int(Selection.minimumSide)) points wide and high")
+            return
+        }
+        guard let panel = panelView.panel else { return }
+        liveSearch.schedule(key, immediately: immediately) {
+            try await panel.search(LensUpload.request(for: crop))
+        }
+    }
+
+    private func panelVisibilityChanged(_ visible: Bool) {
+        if visible {
+            if let selectedView { selectionChanged(selectedView, immediately: false) }
+        } else {
+            liveSearch?.cancel()
+        }
+    }
+
+    private func allowVisualSearch() {
+        defaults.set(true, forKey: "experimentalUpload")
+        defaults.set(true, forKey: "onboarded")
+        uploadCheckbox?.state = .on
+        refreshPanel()
+        if let selectedView { selectionChanged(selectedView, immediately: true) }
+    }
+
+    private func openInBrowser(_ url: URL) {
+        let browser: URL
+        do { browser = try browserURL() } catch {
+            panelView?.panel?.showError("Could not open a browser.", detail: error.localizedDescription)
+            return
+        }
+        dismiss(restore: false)
+        Task {
+            do { try await Browser.open(url, in: browser) } catch { showError(error) }
+        }
+    }
+
+    private func readText(from view: OverlayView) {
+        guard let target = view.hasSelection ? view : selectedView, let crop = try? target.crop() else {
+            view.showWarning("Drag to select an area first")
+            return
+        }
+        recognizeText(crop)
+    }
+
+    func dismiss(restore: Bool = true) {
+        liveSearch?.onChange = nil
+        liveSearch?.cancel()
+        liveSearch = nil
+        panelView = nil
+        selectedView = nil
         for window in overlays { window.orderOut(nil); window.close() }
         overlays.removeAll()
         if restore { previousApp?.activate(options: []) }
         previousApp = nil
     }
 
-    private func submit(_ image: CGImage, mode: CaptureMode) {
+    private func recognizeText(_ image: CGImage) {
         guard !busy else { return }
-        if mode == .search && !defaults.bool(forKey: "experimentalUpload") {
-            dismiss()
-            showSettings()
-            return
-        }
-        let browser: URL?
-        do { browser = mode == .search ? try browserURL() : nil }
-        catch { showError(error); return }
         dismiss()
         busy = true
-        status.button?.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Processing selection")
+        status.button?.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: "Reading text")
         Task {
             do {
-                if mode == .text {
-                    let lines = try await Task.detached(priority: .userInitiated) {
-                        try OCR.recognize(image)
-                    }.value
-                    guard !lines.isEmpty else {
-                        throw LensError.message("No readable text was found in the selected area. Try a larger selection.")
-                    }
-                    resultWindow = TextWindow(text: lines.map(\.text).joined(separator: "\n"), action: { [weak self] action, text in
-                        self?.textAction(action, text: text)
-                    })
-                    NSApp.activate(ignoringOtherApps: true)
-                    resultWindow?.makeKeyAndOrderFront(nil)
-                } else {
-                    let result = try await LensUpload.upload(image)
-                    if let browser { try await Browser.open(result, in: browser) }
+                let lines = try await Task.detached(priority: .userInitiated) { try OCR.recognize(image) }.value
+                guard !lines.isEmpty else {
+                    throw LensError.message("No readable text was found in the selected area. Try a larger selection.")
                 }
+                resultWindow = TextWindow(text: lines.map(\.text).joined(separator: "\n"), action: { [weak self] action, text in
+                    self?.textAction(action, text: text)
+                })
+                NSApp.activate(ignoringOtherApps: true)
+                resultWindow?.makeKeyAndOrderFront(nil)
             } catch { showError(error) }
             busy = false
             status.button?.image = NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "macOS Lens")
@@ -357,7 +449,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             launcherWindow = window
             window.center()
         }
-        launcherShortcutField?.stringValue = "Shortcut: \(shortcut.title)"
+        launcherShortcutField?.stringValue = "Press \(shortcut.title) anywhere to open the screen selector."
         present(launcherWindow)
     }
 
@@ -375,7 +467,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             present(settingsWindow)
             return
         }
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 450),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 500),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "macOS Lens — Settings & privacy"
         window.isReleasedWhenClosed = false
@@ -386,32 +478,38 @@ final class AppController: NSObject, NSApplicationDelegate {
             if bold { field.font = .boldSystemFont(ofSize: 18) }
             root.addSubview(field)
         }
-        label("Circle to Search, adapted for your Mac", y: 398, bold: true)
-        label("Use the menu-bar viewfinder or a global shortcut. Drag a rectangle or draw around an area. " +
-              "Release to search; hold Option to adjust first. Escape returns to your previous app.", y: 333, height: 56)
-        label("Screen capture and Apple Vision OCR stay in memory on this Mac. Visual search sends ONLY your " +
-              "chosen crop to Google. No browser cookies are read and no public image host is used.", y: 268, height: 56)
-        let checkbox = NSButton(checkboxWithTitle: "Enable experimental Google Lens image upload", target: self,
-                                action: #selector(toggleUpload(_:)))
-        checkbox.frame = NSRect(x: 24, y: 240, width: 550, height: 24)
-        checkbox.state = defaults.bool(forKey: "experimentalUpload") ? .on : .off
+        label("Circle to Search, adapted for your Mac", y: 452, bold: true)
+        label("Press the shortcut, Search screen in the macOS Lens window, or the menu-bar viewfinder. The " +
+              "selection starts as the whole screen: drag its edges or corners to resize it, drag inside to move " +
+              "it, or drag across the screen (or use Draw) for a new area. Escape returns to your previous app.",
+              y: 372, height: 70)
+        label("Screen capture and Apple Vision OCR stay in memory on this Mac. Visual search sends ONLY the area " +
+              "inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you pause " +
+              "adjusting it. The results panel uploads with its own Google cookies (and sign-in, if you choose); your " +
+              "browser's cookies are never read and no public image host is used.", y: 300, height: 62)
+        let checkbox = NSButton(checkboxWithTitle: "Allow visual search (experimental Google Lens image upload)",
+                                target: self, action: #selector(toggleUpload(_:)))
+        checkbox.frame = NSRect(x: 24, y: 270, width: 550, height: 24)
+        checkbox.state = uploadAllowed ? .on : .off
+        uploadCheckbox = checkbox
         root.addSubview(checkbox)
-        label("This uses an undocumented Google endpoint, not an official API. It can stop working. " +
-              "Results open in your browser, not an Android-style embedded result sheet.", y: 190, height: 42)
-        label("Browser", y: 161)
+        label("This uses an undocumented Google endpoint, not an official API, and can stop working. Results load " +
+              "in the overlay's right-hand panel, where Google may show rate-limit (429), consent or sign-in pages.",
+              y: 218, height: 44)
+        label("Browser for “Open in browser” and text search", y: 187)
         let browser = NSTextField(labelWithString: browserDescription())
-        browser.frame = NSRect(x: 24, y: 134, width: 318, height: 24)
+        browser.frame = NSRect(x: 24, y: 160, width: 318, height: 24)
         browser.lineBreakMode = .byTruncatingMiddle
         browserField = browser
         root.addSubview(browser)
         let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseBrowser))
-        choose.frame = NSRect(x: 352, y: 132, width: 110, height: 28)
+        choose.frame = NSRect(x: 352, y: 158, width: 110, height: 28)
         root.addSubview(choose)
         let useDefault = NSButton(title: "Use default", target: self, action: #selector(useDefaultBrowser))
-        useDefault.frame = NSRect(x: 464, y: 132, width: 110, height: 28)
+        useDefault.frame = NSRect(x: 464, y: 158, width: 110, height: 28)
         root.addSubview(useDefault)
-        label("Global shortcut", y: 99)
-        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 70, width: 300, height: 28))
+        label("Global shortcut", y: 125)
+        let popup = NSPopUpButton(frame: NSRect(x: 24, y: 96, width: 300, height: 28))
         popup.autoenablesItems = false
         let systemKeys = systemHotKeys()
         for option in Shortcut.all {
@@ -437,6 +535,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func toggleUpload(_ sender: NSButton) {
         defaults.set(sender.state == .on, forKey: "experimentalUpload")
+        if sender.state == .off { liveSearch?.cancel() }
+        refreshPanel()
     }
 
     @objc private func changeShortcut(_ sender: NSPopUpButton) {

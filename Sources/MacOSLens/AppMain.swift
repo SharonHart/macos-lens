@@ -31,6 +31,31 @@ struct AppMain {
                 }
             }
             RunLoop.main.run()
+        } else if CommandLine.arguments.contains("--overlay-check") {
+            Task {
+                do {
+                    try await OverlayCheck.run()
+                    exit(0)
+                } catch {
+                    fputs("Overlay check failed: \(error.localizedDescription)\n", stderr)
+                    exit(1)
+                }
+            }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.run()
+        } else if let index = CommandLine.arguments.firstIndex(of: "--panel-check") {
+            let output = CommandLine.arguments.dropFirst(index + 1).first.map { URL(fileURLWithPath: $0) }
+            Task {
+                do {
+                    try await PanelCheck.run(snapshot: output)
+                    exit(0)
+                } catch {
+                    fputs("Panel check failed: \(error.localizedDescription)\n", stderr)
+                    exit(1)
+                }
+            }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.run()
         } else {
             let app = NSApplication.shared
             let delegate = AppController()
