@@ -11,8 +11,8 @@
 # Finder and AppleScript are never used, so it runs headless: the window layout is written straight into the image's
 # .DS_Store by dmgbuild (through scripts/dmg/build.py, which keeps the writable image out of /Volumes), installed with
 # pinned hashes into a venv under ~/Library/Caches/macos-lens (needs Python 3.9 or later, and the network the first
-# time). The background and volume icon are drawn by scripts/dmg/DMGArt.swift, compiled together with the app's
-# LensMark.swift. Set MACOS_LENS_DMG_QA=<dir> to also write light and dark previews
+# time). The background is drawn by scripts/dmg/DMGArt.swift, compiled together with the app's LensMark.swift, and
+# the volume icon is the app's own AppIcon.icns. Set MACOS_LENS_DMG_QA=<dir> to also write light and dark previews
 # of the window there.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -55,20 +55,16 @@ APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$
 [[ "$APP_VERSION" == "$VERSION" ]] || die "The app is version $APP_VERSION, but Resources/Info.plist says $VERSION."
 APP_NAME="$(basename "$APP")"
 
-step "Drawing the window background and volume icon"
+step "Drawing the window background"
 ART="$WORK/art"
 swiftc -O -parse-as-library -module-name DMGArt Sources/MacOSLens/LensMark.swift scripts/dmg/DMGArt.swift -o "$WORK/dmg-art"
 "$WORK/dmg-art" render "$ART" scripts/dmg/Urbanist-Variable.ttf
 tiffutil -cathidpicheck "$ART/background.png" "$ART/background@2x.png" -out "$ART/background.tiff" >/dev/null
+# The volume shows the app's own icon, which scripts/build-app.sh draws from the same mark.
 ICON_FILE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist" 2>/dev/null || true)"
-if [[ -n "$ICON_FILE" ]]; then
-    VOLUME_ICON="$APP/Contents/Resources/${ICON_FILE%.icns}.icns"
-    [[ -f "$VOLUME_ICON" ]] || die "The app names the icon $ICON_FILE, but $VOLUME_ICON is missing."
-else
-    # The app has no icon of its own yet, so the volume gets the brand icon drawn from the same mark.
-    VOLUME_ICON="$ART/VolumeIcon.icns"
-    iconutil -c icns "$ART/VolumeIcon.iconset" -o "$VOLUME_ICON"
-fi
+[[ -n "$ICON_FILE" ]] || die "The app has no CFBundleIconFile."
+VOLUME_ICON="$APP/Contents/Resources/${ICON_FILE%.icns}.icns"
+[[ -f "$VOLUME_ICON" ]] || die "The app names the icon $ICON_FILE, but $VOLUME_ICON is missing."
 
 step "Preparing dmgbuild"
 PYTHON="${PYTHON:-python3}"

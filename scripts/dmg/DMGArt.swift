@@ -3,10 +3,12 @@ import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Draws the disk image's Finder window and volume icon, and checks the result. It is compiled together with
-/// Sources/MacOSLens/LensMark.swift, so the mark on the disk image is the app's own and can't drift from it.
+/// Draws the app icon and the disk image's Finder window, and checks the result. It is compiled together with
+/// Sources/MacOSLens/LensMark.swift, so the mark on the icon and disk image is the app's own and can't drift from it.
+/// The disk image's volume icon is the app's AppIcon.icns.
 ///
-///     dmg-art render <out dir> <font.ttf>          background.png, background@2x.png, layout.json, VolumeIcon.iconset
+///     dmg-art icon <out.iconset>                   the app icon, 16–512 pt at @1x and @2x, for iconutil
+///     dmg-art render <out dir> <font.ttf>          background.png, background@2x.png, layout.json
 ///     dmg-art resolve <alias hex> <bookmark hex>   prints the paths the background alias and bookmark resolve to
 ///     dmg-art preview <dump.json> <mount> <dir>    light and dark previews of the window, and the volume's icon
 @main
@@ -15,11 +17,12 @@ enum DMGArt {
         let args = Array(CommandLine.arguments.dropFirst())
         do {
             switch (args.first, args.count) {
+            case ("icon", 2): try writeIconset(to: URL(fileURLWithPath: args[1]))
             case ("render", 3): try render(into: URL(fileURLWithPath: args[1]), font: URL(fileURLWithPath: args[2]))
             case ("resolve", 3): try resolve(aliasHex: args[1], bookmarkHex: args[2])
             case ("preview", 4):
                 try preview(dump: URL(fileURLWithPath: args[1]), volume: args[2], into: URL(fileURLWithPath: args[3]))
-            default: throw Failure("usage: dmg-art render|resolve|preview …")
+            default: throw Failure("usage: dmg-art icon|render|resolve|preview …")
             }
         } catch {
             FileHandle.standardError.write(Data("dmg-art: \(error)\n".utf8))
@@ -261,9 +264,11 @@ func checkContrast(_ plain: Canvas) throws {
     }
 }
 
-// MARK: - Volume icon
+// MARK: - App icon
 
-/// The brand's app icon: the mark in Lens blue on a white-to-mist rounded tile, as in the brand kit.
+/// The brand's app icon: the mark in Lens blue on a white-to-mist rounded tile, as in the brand kit. It sits on
+/// Apple's macOS icon grid (an 824 pt body in a 1024 pt canvas) so macOS 26 shows it as is, without the grey
+/// container it puts around non-conforming icons.
 func brandIcon(pixels: Int) -> Canvas {
     let side = CGFloat(pixels)
     let canvas = Canvas(size: CGSize(width: side, height: side), scale: 1)
@@ -271,9 +276,10 @@ func brandIcon(pixels: Int) -> Canvas {
     let small = pixels <= 32
     canvas.draw { context in
         let tile = squircle(CGRect(x: 100 * k, y: 100 * k, width: 824 * k, height: 824 * k))
+        // Apple's template shadow, fitted to the alpha falloff of the system apps' icons, which also drop it at 32 px.
         if !small {
             context.saveGState()
-            context.setShadow(offset: CGSize(width: 0, height: -10 * k), blur: 24 * k, color: CGColor(gray: 0, alpha: 0.22))
+            context.setShadow(offset: CGSize(width: 0, height: -6 * k), blur: 38 * k, color: CGColor(gray: 0, alpha: 0.26))
             context.addPath(tile)
             context.setFillColor(Brand.paper.cgColor)
             context.fillPath()
@@ -314,6 +320,18 @@ func squircle(_ rect: CGRect, n: Double = 5, steps: Int = 720) -> CGPath {
 
 // MARK: - Commands
 
+func writeIconset(to iconset: URL) throws {
+    let files = FileManager.default
+    try? files.removeItem(at: iconset)
+    try files.createDirectory(at: iconset, withIntermediateDirectories: true)
+    for points in [16, 32, 128, 256, 512] {
+        for factor in [1, 2] {
+            let name = "icon_\(points)x\(points)\(factor == 2 ? "@2x" : "").png"
+            try brandIcon(pixels: points * factor).writePNG(to: iconset.appendingPathComponent(name), dpi: 72 * CGFloat(factor))
+        }
+    }
+}
+
 func render(into directory: URL, font: URL) throws {
     let files = FileManager.default
     try files.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -334,15 +352,6 @@ func render(into directory: URL, font: URL) throws {
     try JSONSerialization.data(withJSONObject: layout, options: [.prettyPrinted, .sortedKeys])
         .write(to: directory.appendingPathComponent("layout.json"))
 
-    let iconset = directory.appendingPathComponent("VolumeIcon.iconset")
-    try? files.removeItem(at: iconset)
-    try files.createDirectory(at: iconset, withIntermediateDirectories: true)
-    for points in [16, 32, 128, 256, 512] {
-        for factor in [1, 2] {
-            let name = "icon_\(points)x\(points)\(factor == 2 ? "@2x" : "").png"
-            try brandIcon(pixels: points * factor).writePNG(to: iconset.appendingPathComponent(name), dpi: 72 * CGFloat(factor))
-        }
-    }
     let band = Brand.lensBlue.atLuminance(Brand.labelLuminance)
     print(String(format: "label band #%02X%02X%02X: %.2f:1 with black labels, %.2f:1 with white labels",
                  Int((band.r * 255).rounded()), Int((band.g * 255).rounded()), Int((band.b * 255).rounded()),

@@ -26,6 +26,11 @@ LENS_VISIBLE=1 .build/debug/MacOSLens --panel-aspect-check <folder> live   # nea
 The build script creates an ad-hoc-signed application in `dist/`. Distribution to
 other machines requires your own Developer ID signing and notarization.
 
+The app icon, `Contents/Resources/AppIcon.icns`, is drawn at build time by `scripts/dmg/DMGArt.swift`
+(`dmg-art icon`) from the app's `LensMark.swift` and packed with `iconutil`, so it always matches the
+mark. It follows Apple's icon grid, so macOS 26 shows it without a grey container. The result is cached
+in `.build/app-icon/`, keyed by both sources.
+
 The dependency-free test executable works with Command Line Tools installations
 that do not include XCTest.
 
@@ -51,9 +56,10 @@ The disk images come from `scripts/make-dmg.sh`, which `package.sh` calls. Run i
 rebuild the disk images and `SHA256SUMS` from the existing zip, without a new zip or cask change. It
 never uses Finder or AppleScript, so it runs headless:
 
-- The window background and volume icon are drawn by `scripts/dmg/DMGArt.swift`, compiled together
-  with `Sources/MacOSLens/LensMark.swift` so the mark can't drift. The wordmark font is
+- The window background is drawn by `scripts/dmg/DMGArt.swift`, compiled together with
+  `Sources/MacOSLens/LensMark.swift` so the mark can't drift. The wordmark font is
   `scripts/dmg/Urbanist-Variable.ttf` (SIL Open Font License, `scripts/dmg/OFL-Urbanist.txt`).
+  The volume icon is the app's own `AppIcon.icns`.
 - The Finder layout is written into the image's `.DS_Store` by
   [dmgbuild](https://github.com/dmgbuild/dmgbuild), with `ds-store` and `mac-alias`, all pinned by
   hash in `scripts/dmg/requirements.txt`. They are installed into a venv under
