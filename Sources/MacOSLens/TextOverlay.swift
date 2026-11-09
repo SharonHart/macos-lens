@@ -158,10 +158,12 @@ final class TextSurface: CALayer {
     static func knobCenter(_ point: CGPoint) -> CGPoint { CGPoint(x: point.x, y: point.y - 6 - knobRadius) }
 }
 
-/// A pill-shaped button with a symbol and a title, used in the floating text action menu.
+/// A button with a symbol and a title, used in the floating text action menu. On macOS 26 it is the system's
+/// accessory-bar button inside the menu's glass; before, a borderless pill with a hover highlight.
 final class ChipButton: NSButton {
     private let handler: () -> Void
     private var hover: NSTrackingArea?
+    private let liquid = Glass.isLiquid
 
     init(_ title: String, symbol: String, handler: @escaping () -> Void) {
         self.handler = handler
@@ -178,18 +180,27 @@ final class ChipButton: NSButton {
         setAccessibilityLabel(title)
         target = self
         action = #selector(fire)
-        wantsLayer = true
-        layer?.cornerRadius = 14
+        if liquid {
+            Glass.inBar(self)
+        } else {
+            wantsLayer = true
+            layer?.cornerRadius = 14
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    var preferredWidth: CGFloat { ceil(intrinsicContentSize.width) + 22 }
+    /// The bezel brings its own padding on macOS 26.
+    var preferredWidth: CGFloat { ceil(intrinsicContentSize.width) + (liquid ? 10 : 22) }
+
+    /// Whether the button draws anything of its own beyond the system bezel.
+    var hasCustomBackground: Bool { layer?.backgroundColor != nil || hover != nil }
 
     @objc private func fire() { handler() }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
+        guard !liquid else { return }
         if let hover { removeTrackingArea(hover) }
         let area = NSTrackingArea(rect: bounds, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
                                   owner: self, userInfo: nil)
@@ -198,10 +209,14 @@ final class ChipButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !liquid else { return super.mouseEntered(with: event) }
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.1).cgColor
     }
 
-    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
+    override func mouseExited(with event: NSEvent) {
+        guard !liquid else { return super.mouseExited(with: event) }
+        layer?.backgroundColor = nil
+    }
 }
 
 /// The floating menu next to selected text: Copy, Select all, Listen, Translate and Search, then any quick actions
@@ -328,6 +343,7 @@ final class TranslateBar: FloatingCard {
             .withSymbolConfiguration(.init(pointSize: 11, weight: .semibold))
         closeButton.isBordered = false
         closeButton.bezelStyle = .regularSquare
+        Glass.circle(closeButton)
         closeButton.toolTip = "Stop translating"
         closeButton.target = self
         closeButton.action = #selector(close)

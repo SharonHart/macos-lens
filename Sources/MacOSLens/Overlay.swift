@@ -131,15 +131,19 @@ final class OverlayView: NSView {
     let bar = FloatingCard(radius: 26)
     let field = NSTextField(string: "")
     let lensButton = NSButton()
-    let translateCard = FloatingCard(radius: 26)
+    let translateCard = FloatingCard(radius: 26, bare: true)
     let translateButton = NSButton()
-    let closeCard = FloatingCard(radius: 18)
+    let closeCard = FloatingCard(radius: 18, bare: true)
     let closeButton = NSButton()
     let toast = Toast()
     let actionChip = ActionChip()
     let translateBar = TranslateBar()
     let selectTextChip = FloatingCard(radius: 18)
     private(set) var selectTextButton: ChipButton?
+    /// The search bar and its round buttons, below the results sheet; then the text menus and status above it. Each
+    /// layer renders its glass together on macOS 26, and clicks pass through it except on a control.
+    let controlGlass = Glass.group(spacing: 8)
+    let textGlass = Glass.group(spacing: 8)
 
     // Text. The checks swap these for a private pasteboard, a silent speaker and their own settings.
     static var defaults = UserDefaults.standard
@@ -205,7 +209,7 @@ final class OverlayView: NSView {
         buildStage()
         if controls { buildControls() }
         buildTextControls()
-        addSubview(toast)
+        textGlass.content.addSubview(toast)
         if controls { hint = Self.hintText }
         updateToast()
         updateStage()
@@ -293,17 +297,20 @@ final class OverlayView: NSView {
         field.action = #selector(fieldSubmitted)
         field.setAccessibilityLabel("Add to your search")
         for view in [lensButton, field] { bar.content.addSubview(view) }
-        addSubview(bar)
+        addGlass(controlGlass)
+        controlGlass.content.addSubview(bar)
 
         symbolButton(translateButton, "translate", fallback: "character.bubble", size: 19,
                      label: "Translate the text on screen, in place", action: #selector(translate))
+        Glass.circle(translateButton)
         translateCard.content.addSubview(translateButton)
-        addSubview(translateCard)
+        controlGlass.content.addSubview(translateCard)
 
         symbolButton(closeButton, "xmark", fallback: "xmark.circle", size: 14, label: "Close (Esc)",
                      action: #selector(cancelOverlay))
+        Glass.circle(closeButton)
         closeCard.content.addSubview(closeButton)
-        addSubview(closeCard)
+        controlGlass.content.addSubview(closeCard)
 
         if let panel {
             // Parked offscreen rather than hidden, so a page loading behind it is laid out at its real size.
@@ -317,7 +324,14 @@ final class OverlayView: NSView {
     }
 
     /// Text works on every display, so its menus are built even where the search bar is not.
+    private func addGlass(_ layer: (group: NSView, content: NSView)) {
+        layer.group.frame = bounds
+        layer.content.frame = bounds
+        addSubview(layer.group)
+    }
+
     private func buildTextControls() {
+        addGlass(textGlass)
         translateBar.isHidden = true
         translateBar.onChange = { [weak self] in
             guard let self, self.translatedLines != nil || self.translating else { return }
@@ -325,11 +339,11 @@ final class OverlayView: NSView {
         }
         translateBar.onShowOriginal = { [weak self] in self?.setShowOriginal($0) }
         translateBar.onClose = { [weak self] in self?.endTranslation() }
-        addSubview(translateBar)
+        textGlass.content.addSubview(translateBar)
         selectTextChip.isHidden = true
-        addSubview(selectTextChip)
+        textGlass.content.addSubview(selectTextChip)
         actionChip.isHidden = true
-        addSubview(actionChip)
+        textGlass.content.addSubview(actionChip)
     }
 
     // MARK: Geometry
@@ -421,6 +435,10 @@ final class OverlayView: NSView {
 
     override func layout() {
         super.layout()
+        for layer in [controlGlass, textGlass] where layer.group.superview === self {
+            layer.group.frame = bounds
+            layer.content.frame = layer.group.bounds
+        }
         if hasControls {
             bar.frame = barFrame
             let size = barFrame.size
@@ -618,6 +636,7 @@ final class OverlayView: NSView {
         setPanelFrame(reduceMotion ? panelFrame : hiddenPanelFrame)
         panel.alphaValue = 1
         slidePanel(to: panelFrame, duration: 0.28)
+        layoutChip()
     }
 
     func hidePanel(byUser: Bool = false) {
@@ -626,6 +645,7 @@ final class OverlayView: NSView {
         slidePanel(to: hiddenPanelFrame, duration: 0.24) { [weak self] in
             if self?.panelShown == false { panel.alphaValue = 0 }
         }
+        layoutChip()
         if byUser { actions.panelVisibility(self, false) }
     }
 
@@ -668,6 +688,7 @@ final class OverlayView: NSView {
         panel?.dockedLeft = left
         guard panel != nil, panelShown else { return }
         slidePanel(to: panelFrame, duration: 0.22)
+        layoutChip()
     }
 
     /// Moves the sheet to the other side when it covers a smaller selection that would fit there.
@@ -719,7 +740,12 @@ final class OverlayView: NSView {
         toast.set(text, warning: warning != nil,
                   busy: warning == nil && notice == nil && (working != nil || activity != nil))
         layoutToast()
-        animate(0.2, { self.toast.animator().alphaValue = text == nil ? 0 : 1 })
+        if text != nil { toast.isHidden = false }
+        animate(0.2, { self.toast.animator().alphaValue = text == nil ? 0 : 1 }, completion: { [weak self] in
+            // Glass in a container doesn't fade with its view, so a faded toast is hidden too.
+            guard let self, self.toast.alphaValue == 0 else { return }
+            self.toast.isHidden = true
+        })
     }
 
     // MARK: Commands
@@ -1327,35 +1353,45 @@ final class GlowLayer: CALayer {
     }
 }
 
-/// A rounded, translucent floating surface with a soft shadow that keeps clicks from reaching the screenshot.
+/// A rounded floating surface that keeps clicks from reaching the screenshot: Liquid Glass on macOS 26 and later,
+/// a translucent popover material with a soft shadow before.
 class FloatingCard: NSView {
-    let content = NSVisualEffectView()
+    /// Where the card's controls go.
+    let content: NSView
+    /// The visible chrome: a glass effect view, the popover material, or nothing when the control draws its own glass.
+    let surface: NSView
     private let radius: CGFloat
+    private let liquid: Bool
 
-    init(radius: CGFloat) {
+    /// `bare` cards hold a single control that draws its own native glass on macOS 26, such as a round glass button.
+    init(radius: CGFloat, bare: Bool = false) {
         self.radius = radius
+        liquid = Glass.isLiquid
+        if liquid && bare {
+            surface = NSView()
+            content = surface
+        } else {
+            (surface, content) = Glass.surface(radius: radius)
+        }
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = false
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.28
-        layer?.shadowRadius = 12
-        layer?.shadowOffset = CGSize(width: 0, height: -3)
-        content.material = .popover
-        content.blendingMode = .withinWindow
-        content.state = .active
-        content.wantsLayer = true
-        content.layer?.cornerRadius = radius
-        content.layer?.cornerCurve = .continuous
-        content.layer?.masksToBounds = true
-        addSubview(content)
+        if !liquid {
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowOpacity = 0.28
+            layer?.shadowRadius = 12
+            layer?.shadowOffset = CGSize(width: 0, height: -3)
+        }
+        addSubview(surface)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     override func layout() {
         super.layout()
-        content.frame = bounds
+        surface.frame = bounds
+        if content !== surface { content.frame = surface.bounds }
+        guard !liquid else { return }
         layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: min(radius, bounds.height / 2),
                                    cornerHeight: min(radius, bounds.height / 2), transform: nil)
     }
@@ -1376,6 +1412,7 @@ final class Toast: FloatingCard {
     init() {
         super.init(radius: 17)
         alphaValue = 0
+        isHidden = true
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.lineBreakMode = .byTruncatingTail
         label.alignment = .center
@@ -1713,7 +1750,8 @@ extension OverlayView {
     func layoutChip() {
         guard !actionChip.isHidden else { return }
         let size = actionChip.preferredSize
-        let gap: CGFloat = 12
+        // Glass bends what lies just past its edge into its rim, so it keeps a little further from selected words.
+        let gap: CGFloat = Glass.isLiquid ? 16 : 12
         let floor = (hasControls ? barFrame.maxY : 12) + gap + (translateBar.isHidden ? 0 : 54)
         let ceiling = bounds.maxY - topInset - 12 - 34 - gap
         var origin: CGPoint

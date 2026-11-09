@@ -35,7 +35,13 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     /// Words typed in the search bar; Lens applies them to the visual search as its `q` parameter.
     var refinement = ""
 
-    private let content = NSVisualEffectView()
+    /// The sheet's chrome: Liquid Glass on macOS 26 and later, the popover material before. The results page inside
+    /// stays opaque.
+    let surface: NSView
+    private let content: NSView
+    private let liquid = Glass.isLiquid
+    /// On glass, the results area is an opaque card in the page colour, so text there never sits on refracted content.
+    let bodyCard = BodyCard()
     private let header = PanelHeader()
     private let grabber = NSView()
     let titleLabel = NSTextField(labelWithString: "Google Lens")
@@ -86,21 +92,18 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     /// Results use persistent, app-specific storage by default so the user can sign in to Google here if prompted.
     init(frame: NSRect, dataStore: WKWebsiteDataStore = .default()) {
         self.dataStore = dataStore
+        (surface, content) = Glass.surface(radius: 20)
         super.init(frame: frame)
         wantsLayer = true
         layer?.masksToBounds = false
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.3
-        layer?.shadowRadius = 22
-        layer?.shadowOffset = CGSize(width: 0, height: -6)
-        content.material = .popover
-        content.blendingMode = .withinWindow
-        content.state = .active
-        content.wantsLayer = true
-        content.layer?.cornerRadius = 20
-        content.layer?.cornerCurve = .continuous
-        content.layer?.masksToBounds = true
-        addSubview(content)
+        if !liquid {
+            layer?.shadowColor = NSColor.black.cgColor
+            layer?.shadowOpacity = 0.3
+            layer?.shadowRadius = 22
+            layer?.shadowOffset = CGSize(width: 0, height: -6)
+        }
+        addSubview(surface)
+        if liquid { content.addSubview(bodyCard) }
         buildHeader()
         messageLabel.textColor = .systemRed
         messageLabel.isHidden = true
@@ -159,6 +162,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
             button.isBordered = false
             button.bezelStyle = .regularSquare
             button.contentTintColor = .secondaryLabelColor
+            Glass.circle(button)
             button.toolTip = tip
             button.setAccessibilityLabel(tip)
             button.target = self
@@ -267,8 +271,9 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 
     override func layout() {
         super.layout()
-        content.frame = bounds
-        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 20, cornerHeight: 20, transform: nil)
+        surface.frame = bounds
+        if content !== surface { content.frame = surface.bounds }
+        if !liquid { layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: 20, cornerHeight: 20, transform: nil) }
         let width = bounds.width, height = bounds.height
         let headerHeight: CGFloat = 64
         header.frame = NSRect(x: 0, y: height - headerHeight, width: width, height: headerHeight)
@@ -276,8 +281,9 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         var x = width - 14
         for button in [hideButton, expandButton, openButton] {
             x -= 30
-            button.frame = NSRect(x: x, y: 18, width: 30, height: 28)
-            x -= 2
+            // Glass buttons are round.
+            button.frame = liquid ? NSRect(x: x, y: 17, width: 30, height: 30) : NSRect(x: x, y: 18, width: 30, height: 28)
+            x -= liquid ? 6 : 2
         }
         let textWidth = max(40, x - 18 - 6)
         titleLabel.frame = NSRect(x: 18, y: 30, width: textWidth, height: 20)
@@ -291,6 +297,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
             top -= size.height + 8
         }
         let body = bodyFrame
+        if liquid { bodyCard.frame = body }
         if let webView { Self.place(webView, body) }
         if let preview { Self.place(previewView, Self.previewFrame(for: preview, in: body)) }
         placeholder.frame = NSRect(x: 28, y: body.midY - 40, width: width - 56, height: 80)
@@ -917,5 +924,25 @@ private final class PanelDivider: NSView {
         mouseDragged(with: event)
         start = nil
         onDrag?(0, true)
+    }
+}
+
+/// A plain rounded card in the system's page colour, following light and dark mode.
+final class BodyCard: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.cornerCurve = .continuous
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        }
     }
 }

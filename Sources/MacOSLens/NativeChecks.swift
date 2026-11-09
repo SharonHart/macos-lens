@@ -125,8 +125,8 @@ enum NativeChecks {
                   "the search bar shows the shared 28 pt mark in Google blue")
             let group = view.barFrame.union(view.translateFrame)
             check(abs(group.midX - bounds.midX) <= 1 && view.barFrame.minY < 40 &&
-                  view.field.placeholderString == "Add to your search" && view.bar.superview === view &&
-                  view.translateCard.superview === view && view.translateFrame.minX > view.barFrame.maxX,
+                  view.field.placeholderString == "Add to your search" && view.bar.isDescendant(of: view) &&
+                  view.translateCard.isDescendant(of: view) && view.translateFrame.minX > view.barFrame.maxX,
                   "a search bar with “Add to your search” and Translate to its right floats at the bottom centre")
             check(!views(in: view).contains { $0 is NSSegmentedControl } && !view.field.isHidden &&
                   !buttons(in: view).contains { ["Search", "Text"].contains($0.title) } &&
@@ -135,7 +135,7 @@ enum NativeChecks {
             check(view.recognizing && view.textLayout == nil && view.cursor(at: wordPoint) == .crosshair,
                   "the screen's text is read on this Mac as soon as the overlay opens; until then presses select visually")
             check(view.closeFrame.minX < 40 && view.closeFrame.maxY > bounds.maxY - 32 - 60 &&
-                  view.closeCard.superview === view, "an ✕ close button sits at the top left, below the menu bar")
+                  view.closeCard.isDescendant(of: view), "an ✕ close button sits at the top left, below the menu bar")
             check(!buttons(in: view).contains { ["Draw", "Full screen"].contains($0.title) } &&
                   !view.panelShown && panel.alphaValue == 0 && !panel.frame.intersects(bounds) &&
                   view.actionChip.isHidden && view.selectTextChip.isHidden,
@@ -452,6 +452,7 @@ enum NativeChecks {
             try permissionChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
             try shortcutNoneChecks(check: check)
             try updateChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
+            try glassChecks(check: check, spin: spin, click: click, folder: snapshot?.deletingLastPathComponent())
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -501,6 +502,178 @@ enum NativeChecks {
               "a box around a picture selects it, and the upload waits for the pause after the gesture")
         check(spin({ uploads == 1 }, debounce + 1) && next.panelShown,
               "the first upload happens only after the gesture, and only once")
+    }
+
+    // MARK: - Liquid Glass
+
+    /// On macOS 26 the overlay's floating controls and the results sheet's chrome are native Liquid Glass, with system
+    /// buttons; earlier systems keep the popover material. Builds both looks over synthetic light and dark pages full
+    /// of blue folder shapes, renders them with Core Animation's renderer (the only offscreen path that draws glass)
+    /// and saves before/after crops of the search bar, the text menu and the sheet's header.
+    private static func glassChecks(check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
+                                    click: (CGPoint, OverlayView, Int, NSEvent.ModifierFlags) -> Void,
+                                    folder: URL?) throws {
+        defer { Glass.legacy = false }
+        let liquidSystem: Bool
+        if #available(macOS 26.0, *) { liquidSystem = true } else { liquidSystem = false }
+        let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
+        func layers(_ layer: CALayer) -> [CALayer] { [layer] + (layer.sublayers ?? []).flatMap { layers($0) } }
+
+        for dark in [false, true] {
+            let page = try glassFixture(dark: dark)
+            let tone = dark ? "dark" : "light"
+            for legacy in [true, false] where !legacy || liquidSystem {
+                Glass.legacy = legacy
+                let look = legacy ? "before" : "after"
+                let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let view = OverlayView(frame: size, image: page, displayIndex: 0, topInset: 32, controls: true,
+                                       actions: OverlayActions())
+                window.contentView = view
+                view.layoutSubtreeIfNeeded()
+                view.playIntro()
+                defer { window.close() }
+                guard let panel = view.panel else { throw LensError.message("The overlay has no results sheet.") }
+
+                let controls: [(String, NSView)] = [
+                    ("search bar", view.bar), ("Translate button", view.translateButton),
+                    ("close button", view.closeButton), ("“Select text” chip", view.selectTextChip),
+                    ("text menu", view.actionChip), ("toast", view.toast), ("translate bar", view.translateBar),
+                    ("translate bar's close button", view.translateBar.closeButton), ("results sheet", panel.surface),
+                    ("sheet's Open button", panel.openButton), ("sheet's Expand button", panel.expandButton),
+                    ("sheet's Hide button", panel.hideButton)
+                ]
+                let chrome = all(view.controlGlass.group) + all(view.textGlass.group) + [panel] + all(panel)
+                if legacy {
+                    check(!controls.contains { Glass.isGlassBacked($0.1) } &&
+                          view.bar.surface is NSVisualEffectView && panel.surface is NSVisualEffectView,
+                          "the macOS 14–15 fallback keeps the popover-material controls (\(tone))")
+                } else {
+                    let flat = controls.filter { !Glass.isGlassBacked($0.1) }.map(\.0)
+                    check(flat.isEmpty, "on macOS 26 every overlay control and the sheet's chrome is native Liquid " +
+                          "Glass (\(tone))\(flat.isEmpty ? "" : "; not: \(flat.joined(separator: ", "))")")
+                    func container(_ view: NSView) -> Bool {
+                        guard #available(macOS 26.0, *) else { return false }
+                        return view is NSGlassEffectContainerView
+                    }
+                    check(container(view.controlGlass.group) && container(view.textGlass.group) &&
+                          view.bar.isDescendant(of: view.controlGlass.group) &&
+                          view.actionChip.isDescendant(of: view.textGlass.group) &&
+                          view.toast.isDescendant(of: view.textGlass.group),
+                          "the floating controls sit in glass containers, so neighbouring pieces blend (\(tone))")
+                    check(!chrome.contains { $0 is NSVisualEffectView } &&
+                          !chrome.compactMap(\.layer).flatMap(layers).contains { $0 is CAGradientLayer } &&
+                          [view.bar, view.actionChip, view.selectTextChip, view.toast, view.translateBar]
+                            .allSatisfy { $0.layer?.shadowOpacity ?? 0 == 0 },
+                          "the glass controls use no hand-drawn blur, gradient or shadow (\(tone))")
+                }
+
+                // The bar, as the overlay opens.
+                RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+                guard spin({ view.textLayout != nil }, 20), let layout = view.textLayout,
+                      let word = layout.words.firstIndex(where: { $0.text == "report" }) else {
+                    throw LensError.message("The glass fixture's text was not recognized.")
+                }
+                guard let opened = GlassCapture.image(of: view) else {
+                    throw LensError.message("Could not render the overlay offscreen.")
+                }
+                let barArea = view.barFrame.union(view.translateFrame).insetBy(dx: -28, dy: -22)
+                    .intersection(view.bounds)
+
+                // The text menu, after double-clicking a word selects its line.
+                let point = layout.view(word, in: view.canvas)
+                click(CGPoint(x: point.midX, y: point.midY), view, 2, [])
+                let lines = view.textRange.map { layout.lineRects(for: $0, canvas: view.canvas) } ?? []
+                let chip = view.convert(view.actionChip.frame, from: view.actionChip.superview)
+                check(view.selectedText == "Quarterly report draft" && !view.actionChip.isHidden && !lines.isEmpty &&
+                      !lines.contains { $0.intersects(chip.insetBy(dx: -8, dy: -8)) } &&
+                      view.bounds.contains(chip),
+                      "the \(look) text menu stays clear of the selected words, so nothing highlighted shows " +
+                      "through it (\(tone))")
+                if !legacy {
+                    check(view.actionChip.buttons.count >= 4 && view.actionChip.buttons.allSatisfy {
+                              !$0.hasCustomBackground && $0.isBordered && $0.bezelStyle == .accessoryBarAction &&
+                              $0.showsBorderOnlyWhileMouseInside && $0.image?.isTemplate == true
+                          }, "the text menu is one glass capsule of native buttons with SF Symbols (\(tone))")
+                }
+                guard let chosen = GlassCapture.image(of: view) else {
+                    throw LensError.message("Could not render the overlay offscreen.")
+                }
+                let chipArea = lines.reduce(chip) { $0.union($1) }.insetBy(dx: -20, dy: -16).intersection(view.bounds)
+                if let pixels = Bitmap(chosen) {
+                    var low: CGFloat = 1, high: CGFloat = 0
+                    let inner = chip.insetBy(dx: 14, dy: 8)
+                    for x in stride(from: Int(inner.minX * 2), to: Int(inner.maxX * 2), by: 2) {
+                        for y in stride(from: Int(inner.minY * 2), to: Int(inner.maxY * 2), by: 2) {
+                            let luma = pixels.luma(x, y)
+                            low = min(low, luma)
+                            high = max(high, luma)
+                        }
+                    }
+                    check(high - low > 0.4, "the \(look) text menu renders with readable labels, not a blank " +
+                          "blob (\(tone), contrast \(fmt(high - low)))")
+                }
+
+                // The sheet's header.
+                view.hidePanel()
+                view.revealPanel()
+                panel.update(.idle, allowed: false)
+                RunLoop.main.run(until: Date().addingTimeInterval(0.6))
+                guard let sheet = GlassCapture.image(of: view) else {
+                    throw LensError.message("Could not render the overlay offscreen.")
+                }
+                let header = CGRect(x: panel.frame.minX - 18, y: panel.frame.maxY - 76, width: panel.frame.width + 36,
+                                    height: 94).intersection(view.bounds)
+                let menu = view.convert(view.actionChip.frame, from: view.actionChip.superview)
+                let room = panel.frame.minX - view.bounds.minX - 12 - 16 >= menu.width
+                check(!view.actionChip.isHidden && view.bounds.contains(menu)
+                        && (room ? !menu.intersects(panel.frame) : menu.minX <= view.bounds.minX + 12.5),
+                      "when the sheet slides in, the text menu moves off it, or to the open edge when it can't fit (\(look), \(tone))")
+                check(view.toastText.isEmpty == view.toast.isHidden,
+                      "a faded-out toast is also hidden, so its glass never lingers on screen (\(look), \(tone))")
+                if !legacy, let pixels = Bitmap(sheet) {
+                    // A folder sits under the sheet's empty lower body at y 140–194; the page is blank at y 300.
+                    let x = Int(panel.frame.minX + 300) / 104 * 104 + 75
+                    let over = pixels.rgb(x * 2, 167 * 2), beside = pixels.rgb(x * 2, 300 * 2)
+                    let tint = abs(over.b - beside.b) + abs(over.r - beside.r)
+                    check(panel.bodyCard.superview != nil && panel.bodyCard.frame == panel.bodyFrame && tint < 0.03,
+                          "the sheet's results area is an opaque card on the glass, so nothing shows through the " +
+                          "page or its text (\(tone), difference \(fmt(tint)))")
+                }
+
+                if let folder {
+                    let shots: [(String, CGImage, CGRect)] = [("bar", opened, barArea), ("chip", chosen, chipArea),
+                                                               ("header", sheet, header)]
+                    for (name, image, area) in shots {
+                        guard let crop = GlassCapture.crop(image, area, viewHeight: view.bounds.height) else { continue }
+                        try write(crop, to: folder.appendingPathComponent("glass.\(look).\(name).\(tone).png"))
+                    }
+                    try write(sheet, to: folder.appendingPathComponent("glass.\(look).full.\(tone).png"))
+                }
+            }
+        }
+    }
+
+    /// A light or dark page with a line of text among rows of blue folder shapes, like a Finder window, so the
+    /// controls' material has something colourful to show through.
+    private static func glassFixture(dark: Bool) throws -> CGImage {
+        try drawn { size in
+            (dark ? NSColor(calibratedWhite: 0.11, alpha: 1) : NSColor.white).setFill()
+            NSRect(origin: .zero, size: size).fill()
+            NSColor(calibratedRed: 0.33, green: 0.62, blue: 0.98, alpha: 1).setFill()
+            for row in [30.0, 140, 400, 610] {
+                for column in stride(from: 40.0, to: size.width, by: 104) {
+                    NSBezierPath(roundedRect: NSRect(x: column, y: row, width: 70, height: 54), xRadius: 8,
+                                 yRadius: 8).fill()
+                }
+            }
+            ("Quarterly report draft" as NSString).draw(at: NSPoint(x: 110, y: 500), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 44, weight: .medium),
+                .foregroundColor: dark ? NSColor.white : NSColor.black
+            ])
+        }
     }
 
     // MARK: - Screen Recording
