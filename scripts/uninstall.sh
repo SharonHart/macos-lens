@@ -160,7 +160,7 @@ main() {
             printf 'Installed with Homebrew? Also run: brew uninstall --cask macos-lens\n'
         fi
         if [[ -d "$path/Cellar/macos-lens" ]]; then
-            printf 'Installed with Homebrew? Also run: brew uninstall macos-lens\n'
+            printf 'Installed with the old Homebrew formula? Also run: brew uninstall macos-lens\n'
         fi
     done
     ((failed)) && exit 1

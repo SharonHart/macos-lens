@@ -2,14 +2,14 @@
 # Installs or updates macOS Lens.
 #
 #   curl -fsSL https://raw.githubusercontent.com/SharonHart/macos-lens/main/scripts/install.sh | bash
-#   ./scripts/install.sh [--from-source] [--dir <path>] [--no-launch] [--no-tcc-reset]
+#   ./scripts/install.sh [--dir <path>] [--no-launch] [--no-tcc-reset]
 #
-# By default this downloads the latest prebuilt release (no Xcode or Swift needed), verifies its checksum and
-# signature, and installs it to /Applications (or ~/Applications when /Applications isn't writable). If no
-# release is available it builds from source instead. Nothing is sent anywhere except the GitHub downloads.
+# This downloads the latest prebuilt release, verifies its checksum and signature, and installs it to
+# /Applications (or ~/Applications when /Applications isn't writable). Nothing is sent anywhere except the
+# GitHub downloads. (Maintainers: --from-source builds the checkout instead, and is used when no release exists.)
 #
 # Environment:
-#   GITHUB_TOKEN (or GH_TOKEN)      token for downloads while the repository is private (gh is used if signed in)
+#   GITHUB_TOKEN (or GH_TOKEN)      optional; only raises GitHub's API rate limit (downloads are anonymous)
 #   MACOS_LENS_INSTALL_DIR=<dir>    install into <dir> instead of /Applications
 #   MACOS_LENS_RELEASE_ZIP=<zip>    install this release zip instead of downloading (checked against a
 #                                   SHA256SUMS file next to it when present)
@@ -55,13 +55,10 @@ Usage:
   ./scripts/install.sh [options]
 
 Options:
-  --from-source    build from source (needs the Xcode Command Line Tools) instead of downloading a release
   --dir <path>     install into <path> instead of /Applications (or ~/Applications)
   --no-launch      don't open the app after installing
   --no-tcc-reset   don't reset the app's Screen Recording entry
   -h, --help       show this help
-
-While the repository is private, sign in with `gh auth login` or set GITHUB_TOKEN.
 EOF
 }
 
@@ -119,7 +116,7 @@ download_with_curl() {
     case "$code" in
         200) ;;
         404) return 1 ;;
-        401) die "GitHub rejected GITHUB_TOKEN (HTTP 401). Check the token or run: gh auth login" ;;
+        401) die "GitHub rejected GITHUB_TOKEN (HTTP 401). Check it, or unset it to download anonymously." ;;
         403 | 429) die "GitHub refused the request (HTTP $code, probably a rate limit). Set GITHUB_TOKEN or try again later." ;;
         *) die "Unexpected response from GitHub (HTTP $code)." ;;
     esac
@@ -198,7 +195,7 @@ build_from_source() {
     else
         info "Cloning $REPO..."
         git clone --quiet --depth 1 "https://github.com/$REPO.git" "$WORK/source" ||
-            die "Could not clone $REPO. While it's private, make sure git can sign in to GitHub (for example: gh auth login, then gh auth setup-git)."
+            die "Could not clone $REPO."
         SOURCE_ROOT="$WORK/source"
     fi
     info "Building from $SOURCE_ROOT (this takes a minute or two)..."
@@ -302,8 +299,8 @@ print_shortcuts() {
     text="$(shortcut_titles textOptions | head -n 1)"
     fallbacks="$(shortcut_titles textOptions | sed 1d | paste -sd '/' - | sed 's|/| or |g')"
     printf '\nKeyboard shortcuts (change them in macOS Lens Settings):\n'
-    printf '  Search the screen:  %s\n' "${search:-Command + Shift + 2}"
-    printf '  Select text:        %s (uses %s if macOS already has that one)\n' \
+    printf '  Search or select text:  %s\n' "${search:-Command + Shift + 2}"
+    printf '  Select all text:        %s (uses %s if macOS already has that one)\n' \
         "${text:-Command + Shift + 1}" "${fallbacks:-Control + Shift + 1 or Control + Option + T}"
 }
 
@@ -343,7 +340,7 @@ main() {
     elif download_with_gh || download_with_curl; then
         unpack_release "$DOWNLOADED_ZIP" "$WORK/download/SHA256SUMS"
     else
-        warn "No prebuilt release found. If the repository is still private, sign in with 'gh auth login' or set GITHUB_TOKEN."
+        warn "No prebuilt release found."
         info "Building from source instead."
         build_from_source
     fi
