@@ -526,3 +526,24 @@ html[data-buttons="pill"] .btn--secondary:hover { background: color-mix(in oklab
   #install .support p { flex: 1 1 auto; min-width: 0; }
   #install .support .muted { display: block; }
 }
+
+/* a short screen. Under 900 tall the rhythm tightens (one screen still, with room under the last row);
+   under 830 (1440x780, 1366x768, 1280x720, a tablet or a phone on its side) a section that still cannot
+   hold its content grows past the screen rather than lay it over the next one. */
+@media (min-width: 640px) and (max-height: 899px) {
+  :root { --padt: 104px; --padb: 56px; --hgap: 32px; --hpadb: 40px; }
+}
+@media (min-width: 640px) and (max-height: 829px) {
+  main > :is(section, .section):not(.hero, .section--hero), footer.closing {
+    height: auto; min-height: calc(var(--h, 1) * 100vh); min-height: calc(var(--h, 1) * 100svh);
+  }
+  :where(main > :is(section, .section):not(.hero, .section--hero), footer.closing) { display: flex; flex-direction: column; }
+  main > :is(section, .section):not(.hero, .section--hero) > :is(.wrap, .container), footer.closing > .wrap { flex: 1 0 auto; height: auto; min-height: 0; }
+}
+/* the hero likewise, there and on a tablet (768x1024 stacks words and picture taller than the screen):
+   at least the first screen, taller only when its content needs it */
+@media (min-width: 640px) and (max-height: 829px), (min-width: 640px) and (max-width: 1279px) {
+  main > :is(.hero, .section--hero) { height: auto; min-height: 100vh; min-height: 100svh; }
+  main > :is(.hero, .section--hero):has(> :is(.wrap, .container)) { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; }
+  main > :is(.hero, .section--hero) > :is(.wrap, .container) { height: auto; }
+}
