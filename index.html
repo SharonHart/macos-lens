@@ -1,0 +1,480 @@
+<!doctype html>
+<!-- CONTRACT
+THESIS: macOS Lens is Circle to Search on the Mac. The page proves it by letting you do it.
+OWN-WORLD: a frozen screen under a Google-coloured edge glow, white corner brackets, a light results
+sheet, all on a near-black page with one blue.
+STORY: try it in the hero, watch thirty seconds of the real app, use the text tools, see the rest,
+learn what leaves the Mac, install it, read the limits, go.
+FIRST VIEWPORT: the icon, one line of claim, Download for Mac, and a live frozen screen beside them,
+whole, that you can circle.
+FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not adjectives. -->
+<html lang="en" data-type="software" data-radius="soft" data-buttons="pill" data-motion>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>macOS Lens: Circle to Search for the Mac, from the menu bar</title>
+<meta name="description" content="A free menu-bar app for macOS 14 or later. Press Command-Shift-2, circle anything on screen to see Google Lens results, or copy, translate and listen to its text. Capture and text recognition stay on your Mac.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="macOS Lens: Circle to Search for the Mac">
+<meta property="og:description" content="Freeze the screen, circle anything, search it or use its text. Free, macOS 14 or later.">
+<meta property="og:image" content="https://sharonhart.github.io/macos-lens/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#0b0d12">
+<!-- <link rel="canonical" href="https://[domain once chosen]/"> -->
+<meta name="site-kind" content="software">
+<meta name="page-type" content="software">
+<link rel="preload" href="assets/fonts/urbanist-var.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/ui/base.css">
+<link rel="stylesheet" href="assets/site.css">
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/line-carries-colour/moment.js">
+</head>
+<body>
+<!-- type: software
+     deal: hero split 5/7 (kept over centred: the live demo shows whole in the first screen), nav centre
+     (dealt cards; no photographs to put in them), close word, footer dark, rhythm surface-pairs
+     (#privacy and #install), buttons pill, mark: the client's own (LensMark)
+     moments: line-carries-colour on #privacy, from base -->
+<header class="nav nav--centre">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item"><a class="nav__link" href="#watch">Watch</a></div>
+      <div class="nav__item">
+        <a class="nav__link" href="#text">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+        <div class="nav__menu">
+          <div class="wrap grid">
+            <div class="menu-col span-3">
+              <p class="t-label">Search</p>
+              <a href="#top">Circle to search<span>Try it on the page</span></a>
+              <a href="#more">Zoom and brackets<span>Get close, then adjust</span></a>
+              <a href="#more">Open in browser<span>The image goes with it</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Text</p>
+              <a href="#text">Copy and translate<span>Where the words sit</span></a>
+              <a href="#text">Listen<span>In the Mac's own voice</span></a>
+              <a href="#text">Smart actions<span>Call, write, track, add</span></a>
+            </div>
+            <div class="menu-col span-3">
+              <p class="t-label">Project</p>
+              <a href="#privacy">Privacy<span>What stays, what is sent</span></a>
+              <a href="https://github.com/SharonHart/macos-lens">Source on GitHub<span>Issues and releases</span></a>
+              <a href="https://buymeacoffee.com/sharonhart">Buy Me a Coffee<span>Support the developer</span></a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="nav__item"><a class="nav__link" href="#privacy">Privacy</a></div>
+      <div class="nav__item"><a class="nav__link" href="#install">Install</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">FAQ</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="nav__link" href="https://github.com/SharonHart/macos-lens">GitHub</a>
+      <a class="btn btn--primary" href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Download<span class="nav__cta-x"> for Mac</span></a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero hero--split" data-enter aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text grid hero__grid">
+      <div class="hero__text span-5">
+        <p class="hero__eyebrow"><img src="assets/brand/app-icon-512.png" alt="" width="40" height="40">macOS Lens</p>
+        <h1 id="hero-h">Circle to Search, on your Mac</h1>
+        <p class="hero__lead">Press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd> to freeze the screen. Circle anything to search it with Google Lens, or tap its words to copy, translate or hear them.</p>
+        <div class="btn-row">
+          <a class="btn btn--primary" href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Download for Mac<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+          <a class="btn btn--secondary" href="https://github.com/SharonHart/macos-lens">View on GitHub</a>
+        </div>
+        <div class="cmd cmd--hero"><pre aria-label="Or install from Terminal"><span class="p">$ </span><code>curl -fsSL https://raw.githubusercontent.com/SharonHart/macos-lens/main/scripts/install.sh | bash</code></pre><button class="copy" type="button" data-copy aria-label="Copy the command"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button></div>
+        <dl class="hero-facts">
+          <div><dt>Price</dt><dd>Free</dd></div>
+          <div><dt>Needs</dt><dd>macOS 14 or later</dd></div>
+          <div><dt>Runs on</dt><dd>Apple silicon and Intel</dd></div>
+        </dl>
+      </div>
+      <div class="hero__media span-7 start-6 demo">
+        <div class="lx ui ui-lens has-sheet" data-lens="hero" data-state="search">
+          <div class="lx__screen" tabindex="0" role="application" aria-roledescription="frozen screen" aria-label="A frozen screen to try. Drag around the chair to search for it, or across words to select them. Press Enter to search the chair." aria-describedby="hero-live">
+            <div class="desk">
+              <div class="desk__bar"><b>Browser</b><span>File</span><span>Edit</span><span>View</span><span>History</span><span class="r"><img src="assets/brand/mark.svg" alt="">Tue 9:41</span></div>
+              <div class="win shop">
+                <div class="win__bar"><i></i><i></i><i></i><span class="win__url">hollis-furniture.example</span></div>
+                <div class="win__body">
+                  <div class="shop__photo" data-obj="Butterfly chair"><img src="assets/demo/chair.jpg" alt="" width="962" height="1000"></div>
+                  <div class="shop__info" data-words>
+                    <p class="shop__brand">Hollis Furniture</p>
+                    <p class="shop__title">Butterfly chair, leather and steel</p>
+                    <p class="shop__price">$189</p>
+                    <p class="shop__desc">A folding steel frame with a cognac leather sling. Ships flat in one box.</p>
+                    <p class="shop__review" data-tr><span class="orig">«Comodissima. La uso ogni sera sul balcone e si chiude in un attimo.»</span><span class="tr">“Very comfortable. I use it every evening on the balcony, and it folds in a second.”</span><small>Giulia, Bologna</small></p>
+                    <span class="shop__btn">Add to cart</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="ov">
+              <div class="ov__glow"></div>
+              <div class="sheet" aria-label="Search results">
+                <div class="sheet__head">
+                  <span class="sheet__thumb" style="background-image:url(assets/demo/chair.jpg)"></span>
+                  <p class="sheet__q"><b>Butterfly chair</b><span>Visual matches</span></p>
+                </div>
+                <div class="sheet__body">
+                  <p class="sheet__label">Visual matches</p>
+                  <div class="sheet__grid">
+                    <div class="res"><span class="res__img" style="background-image:url(assets/demo/chair.jpg);--f:grayscale(1) brightness(.42)"></span><b>Butterfly sling chair, black leather</b><span>loftline.example</span><em>$164</em></div>
+                    <div class="res"><span class="res__img" style="background-image:url(assets/demo/chair.jpg);--f:sepia(1) hue-rotate(30deg) saturate(2.42) brightness(.85)"></span><b>Folding lounge chair, olive suede</b><span>harbourhome.example</span><em>$210</em></div>
+                    <div class="res"><span class="res__img" style="background-image:url(assets/demo/chair.jpg);--f:sepia(1) hue-rotate(-2deg) saturate(1.98) brightness(1.05)"></span><b>Sling chair with steel frame, tan</b><span>northfield.example</span><em>$189</em></div>
+                    <div class="res"><span class="res__img" style="background-image:url(assets/demo/chair.jpg);--f:sepia(1) hue-rotate(187deg) saturate(3.52) brightness(.62)"></span><b>Replacement cover for butterfly chairs</b><span>fabricshed.example</span><em>$48</em></div>
+                  </div>
+                </div>
+                <div class="sheet__foot"><button class="sheet__open" type="button">Open in browser</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="sr-only" id="hero-live" aria-live="polite"></p>
+        <div class="keys ui ui-keys">
+          <button class="keybtn" type="button" data-lens-key="search" aria-keyshortcuts="Meta+Shift+2"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd><span>Search the screen</span></button>
+          <button class="keybtn" type="button" data-lens-key="text" aria-keyshortcuts="Meta+Shift+1"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>1</kbd><span>Select all text</span></button>
+          <p class="keys__hint" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>Or circle the chair</p>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section" id="watch" aria-labelledby="watch-h">
+    <div class="wrap">
+      <div class="section-head"><h2 id="watch-h">Thirty seconds of the real app. <span class="muted">Recorded on macOS 26.</span></h2></div>
+      <div class="grid watch">
+      <div class="span-5 watch__side">
+        <ol class="chapters" aria-label="Chapters" hidden>
+          <li><button type="button" data-t="0"><span>0:00</span>Freeze the screen</button></li>
+          <li><button type="button" data-t="5"><span>0:05</span>Circle the chair</button></li>
+          <li><button type="button" data-t="12"><span>0:12</span>Select and translate text</button></li>
+          <li><button type="button" data-t="19"><span>0:19</span>Act on an order email</button></li>
+          <li><button type="button" data-t="25"><span>0:25</span>Open in the browser</button></li>
+        </ol>
+        <p class="watch__note">Recorded in the real app with a scripted pointer, on pages written for the demo.</p>
+      </div>
+      <div class="span-7 start-6 reel">
+        <video data-reel muted playsinline loop preload="none" poster="assets/reel/poster.jpg" width="1920" height="1080" aria-label="macOS Lens in use: freezing the screen, circling a chair to see visual matches, selecting and translating text, and opening a result in the browser.">
+          <!-- the reel's sources go here once it is rendered (sha256-versioned):
+          <source media="(max-width: 639px)" src="assets/reel/reel-4x5.mp4?v=" type="video/mp4">
+          <source src="assets/reel/reel-16x9.mp4?v=" type="video/mp4"> -->
+        </video>
+        <button class="reel__pause" type="button" aria-pressed="false" aria-label="Pause the video">
+          <svg class="i-pause" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.5v11M11 1.5v11" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+          <svg class="i-play" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.5v11l9.5-5.5z" fill="currentColor"/></svg>
+        </button>
+      </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="text" aria-labelledby="text-h">
+    <div class="wrap">
+      <div class="section-head--split tour__head">
+        <div><h2 id="text-h">Copy, translate or hear any text on your screen</h2></div>
+        <div class="tabs" role="tablist" aria-label="Text tools">
+          <button class="tab" role="tab" id="tab-copy" aria-controls="p-copy" aria-selected="true">Copy</button>
+          <button class="tab" role="tab" id="tab-tr" aria-controls="p-tr" aria-selected="false">Translate</button>
+          <button class="tab" role="tab" id="tab-listen" aria-controls="p-listen" aria-selected="false">Listen</button>
+          <button class="tab" role="tab" id="tab-act" aria-controls="p-act" aria-selected="false">Smart actions</button>
+        </div>
+      </div>
+      <div class="tour__panels">
+        <div class="tour__panel tour__panel--copy" role="tabpanel" id="p-copy" aria-labelledby="tab-copy">
+          <div class="tour__copy">
+            <h3>Copy words from anything</h3>
+            <p>A screen share, a paused video, a photo of a whiteboard. Tap a word or drag across a line, then Copy. The handles adjust the selection.</p>
+          </div>
+          <div class="lx lx--mini ui ui-lens" data-lens="copy" data-state="text">
+            <div class="lx__screen" tabindex="0" role="application" aria-roledescription="frozen screen" aria-label="A frozen video call with a shared slide. Drag across words to select them.">
+              <div class="desk">
+                <div class="win call">
+                  <div class="win__bar"><i></i><i></i><i></i><span class="win__url">Weekly sync · screen share</span></div>
+                  <div class="win__body">
+                    <div class="slide" data-words>
+                      <p class="slide__h">Guest Wi-Fi for the offsite</p>
+                      <p>Network: <span data-pick>Maple-Guest</span></p>
+                      <p class="big">Password: <span data-pick data-start>tulip-river-4821</span></p>
+                      <p>The code changes on Monday, 18 May.</p>
+                    </div>
+                    <div class="tiles" aria-hidden="true"><span class="tile">Noor</span><span class="tile">Tadeo</span><span class="tile">You</span></div>
+                  </div>
+                </div>
+              </div>
+              <div class="ov"><div class="ov__glow"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="tour__panel tour__panel--tr" role="tabpanel" id="p-tr" aria-labelledby="tab-tr" hidden>
+          <div class="tour__copy">
+            <h3>Translate it where it is</h3>
+            <p>The translation covers the original in the same place, so a menu still reads like a menu. It runs on the Mac once the language pair is downloaded. Show original flips it back.</p>
+          </div>
+          <div class="lx lx--mini ui ui-lens" data-lens="translate" data-state="text">
+            <div class="lx__screen" tabindex="0" role="application" aria-roledescription="frozen screen" aria-label="A frozen photo of an Italian menu, translated into English in place.">
+              <div class="desk">
+                <div class="menu">
+                  <div class="menu__card" data-words>
+                    <p class="menu__h">Trattoria da Lina</p>
+                    <p class="sub" data-tr><span class="orig">Piatti del giorno</span><span class="tr">Today's dishes</span></p>
+                    <div class="dish"><b data-tr><span class="orig">Pappardelle al ragù di cinghiale</span><span class="tr">Pappardelle with wild boar ragù</span></b><i>16</i><p data-tr><span class="orig">cotto lentamente nel vino rosso</span><span class="tr">slow-cooked in red wine</span></p></div>
+                    <div class="dish"><b data-tr><span class="orig">Risotto ai funghi porcini</span><span class="tr">Porcini mushroom risotto</span></b><i>15</i><p data-tr><span class="orig">con parmigiano stagionato</span><span class="tr">with aged parmesan</span></p></div>
+                    <div class="dish"><b data-tr><span class="orig">Branzino al forno con patate</span><span class="tr">Oven-baked sea bass with potatoes</span></b><i>22</i><p data-tr><span class="orig">e olive taggiasche</span><span class="tr">and Taggiasca olives</span></p></div>
+                    <div class="dish"><b data-tr><span class="orig">Tiramisù della casa</span><span class="tr">House tiramisù</span></b><i>7</i></div>
+                  </div>
+                </div>
+              </div>
+              <div class="ov"><div class="ov__glow"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="tour__panel tour__panel--listen" role="tabpanel" id="p-listen" aria-labelledby="tab-listen" hidden>
+          <div class="tour__copy">
+            <h3>Listen to a passage</h3>
+            <p>Select a paragraph and choose Listen. Your Mac reads it aloud in its own voice. Try it here: your browser's voice reads the paragraph.</p>
+          </div>
+          <div class="lx lx--mini ui ui-lens" data-lens="listen" data-state="text">
+            <div class="lx__screen" tabindex="0" role="application" aria-roledescription="frozen screen" aria-label="A frozen news article with a paragraph selected. Choose Listen to hear it.">
+              <div class="desk">
+                <div class="win article">
+                  <div class="win__bar"><i></i><i></i><i></i><span class="win__url">brookfield-gazette.example</span></div>
+                  <div class="win__body" data-words>
+                    <p class="article__h">Juniper Lane library opens late on Thursdays</p>
+                    <p class="by">By Ana Ruiz · 4 min read</p>
+                    <p data-pick data-start>From next week the library stays open until 9 pm on Thursdays. The reading room gets twelve new desks, and the children's corner moves downstairs, next to the garden door.</p>
+                    <p>Volunteers can sign up at the front desk.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="ov"><div class="ov__glow"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="tour__panel tour__panel--act" role="tabpanel" id="p-act" aria-labelledby="tab-act" hidden>
+          <div class="tour__copy">
+            <h3>Act on what it finds</h3>
+            <p>Email addresses, phone numbers, street addresses, links, tracking numbers and dates get the action that fits: write, call, open Maps, open the page, track the parcel, add to the calendar.</p>
+          </div>
+          <div class="lx lx--mini ui ui-lens" data-lens="actions" data-state="text">
+            <div class="lx__screen" tabindex="0" role="application" aria-roledescription="frozen screen" aria-label="A frozen order email. Tap the underlined tracking number, date, address, phone number, email address or link for its action.">
+              <div class="desk">
+                <div class="win mail">
+                  <div class="win__bar"><i></i><i></i><i></i><span class="win__url">Inbox · Your order has shipped</span></div>
+                  <div class="win__body" data-words>
+                    <div class="from"><i aria-hidden="true">H</i><div><b>Hollis Furniture</b><span>orders@hollis.example</span></div></div>
+                    <p class="mail__h">Your butterfly chair is on its way</p>
+                    <dl>
+                      <dt>Tracking</dt><dd><span data-ent="track" data-start>RA123456785GB</span></dd>
+                      <dt>Arrives</dt><dd><span data-ent="date">Thursday 14 May</span></dd>
+                      <dt>Deliver to</dt><dd><span data-ent="address">42 Juniper Lane, Brookfield</span></dd>
+                    </dl>
+                    <p>Questions? Call <span data-ent="phone">+1 415 555 0142</span> or write to <span data-ent="email">help@hollis.example</span>. Your order is also at <span data-ent="url">hollis.example/orders</span>.</p>
+                  </div>
+                </div>
+              </div>
+              <div class="ov"><div class="ov__glow"></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="more" aria-labelledby="more-h">
+    <div class="wrap">
+      <div class="section-head"><h2 id="more-h">More from the frozen screen</h2></div>
+      <div class="caps">
+        <article class="cap">
+          <div class="well ui ui-well ui-zoom" aria-hidden="true"><div class="w-zoom__pic"><span><b>Serial no.</b> LX-2093-118-B<br>Made in Portugal · 2024</span></div><i class="w-zoom__dot"></i><i class="w-zoom__dot"></i></div>
+          <h3>Pinch to zoom</h3>
+          <p>Pinch or pan with two fingers to get close to small type before you circle it.</p>
+        </article>
+        <article class="cap">
+          <div class="well ui ui-well ui-brackets is-live" aria-hidden="true"><i class="w-brk__obj"></i><i class="w-brk__obj"></i><div class="w-brk"><i></i><i></i><i></i><i></i></div></div>
+          <h3>Brackets you can move</h3>
+          <p>Drag a corner to resize the selection or drag inside it to move it. The results follow.</p>
+        </article>
+        <article class="cap">
+          <div class="well ui ui-well ui-chip" aria-hidden="true"><div class="w-chip__box"><i></i><i></i><i></i></div><span class="w-chip__pill">Select text</span></div>
+          <h3>A Select text chip</h3>
+          <p>When the area you circled has words in it, one tap switches to selecting them.</p>
+        </article>
+        <article class="cap">
+          <div class="well ui ui-well ui-select-all" aria-hidden="true"><div class="w-all"><i></i><i></i><i></i><i></i><i></i></div><div class="w-all__keys"><kbd>⌘</kbd><kbd>⇧</kbd><kbd>1</kbd></div></div>
+          <h3>All the text at once</h3>
+          <p><kbd>⌘</kbd><kbd>⇧</kbd><kbd>1</kbd> opens the same view with every word on screen already selected.</p>
+        </article>
+        <article class="cap">
+          <div class="well ui ui-well ui-menubar" aria-hidden="true"><div class="w-bar"><span>9:41</span><img src="assets/brand/mark.svg" alt=""></div><div class="w-menu"><div>Search screen… <span>⌘⇧2</span></div><div>Select text on screen… <span>⌘⇧1</span></div><i class="w-menu__sep"></i><div>Settings &amp; privacy…</div></div></div>
+          <h3>Lives in the menu bar</h3>
+          <p>Click the icon to start a search. Right-click it for settings and the shortcuts.</p>
+        </article>
+        <article class="cap">
+          <div class="well ui ui-well ui-browser" aria-hidden="true"><div class="w-tab"><div class="w-tab__bar"><i></i><i></i><i></i></div><div class="w-tab__body"><span class="w-tab__img" style="background-image:url(assets/demo/chair.jpg)"></span><div class="w-tab__lines"><i></i><i></i><i></i></div></div></div></div>
+          <h3>Open in your browser</h3>
+          <p>Hand the search over to your default browser, with the image you circled.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section ground-surface" id="privacy" aria-labelledby="privacy-h" data-moment="line-carries-colour" data-moment-opts='{"from":"base"}'>
+    <div class="wrap">
+      <div class="section-head"><h2 id="privacy-h">Your screen stays on your Mac. <span class="muted">A search sends the part you chose, and only after you allow it.</span></h2></div>
+      <div class="priv">
+        <div class="priv__col">
+          <h3><svg viewBox="0 0 28 28" aria-hidden="true"><rect x="4" y="6" width="20" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M2 22h24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>On this Mac</h3>
+          <ul>
+            <li>Freezing the screen <span>ScreenCaptureKit</span></li>
+            <li>Reading the text <span>Apple Vision</span></li>
+            <li>Translating <span>after a one-time language download</span></li>
+            <li>Listen <span>the Mac's own voices</span></li>
+            <li>Smart actions <span>dates, phones, addresses, links</span></li>
+          </ul>
+        </div>
+        <div class="priv__col">
+          <h3><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M8 20h12a5 5 0 0 0 .6-10A7 7 0 0 0 7.2 11.5 4.3 4.3 0 0 0 8 20z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>Sent to Google when you search</h3>
+          <ul>
+            <li>The area you selected <span>an image of that area only</span></li>
+            <li>Words you type in the bar <span>to narrow the search</span></li>
+            <li>Translate with Google <span>only when you agree each time</span></li>
+            <li>The results sheet's cookies <span>kept apart from your browser</span></li>
+          </ul>
+        </div>
+      </div>
+      <p class="priv__note">The first visual search asks before anything is sent. Choose Allow visual search, or keep to the text tools; you can turn it off again in Settings &amp; privacy. Visual search uses an unofficial Google Lens endpoint, so a change on Google's side can break it until the app is updated.</p>
+    </div>
+  </section>
+
+  <section class="section" id="faq" aria-labelledby="faq-h">
+    <div class="wrap grid">
+      <div class="span-12 section-head"><h2 id="faq-h">Questions and limits</h2></div>
+      <div class="faq span-6">
+        <div class="faq__item"><h3>Is this made by Google?</h3><p>No. macOS Lens is independent and not affiliated with Google or Apple. Visual search uses an unofficial Google Lens endpoint that can change at any time.</p></div>
+        <div class="faq__item"><h3>What leaves my Mac?</h3><p>Only the area you search and any words you type. Capture, text recognition and smart actions stay on the Mac. <a href="#privacy">Privacy in detail</a></p></div>
+        <div class="faq__item"><h3>Why does my Mac ask for Open Anyway, and Screen Recording after updates?</h3><p>Releases are ad-hoc signed, not notarized by Apple. macOS blocks the first launch of each new version, and treats each build as a new app when it checks Screen Recording.</p></div>
+      </div>
+      <div class="faq span-6">
+        <div class="faq__item"><h3>Which Macs does it run on?</h3><p>macOS 14 Sonoma or later, on Apple silicon or Intel.</p></div>
+        <div class="faq__item"><h3>Does macOS Lens work offline?</h3><p>Text selection, Copy, Listen, smart actions and downloaded translations work offline. Visual search needs a connection.</p></div>
+        <div class="faq__item"><h3>What if <kbd>⌘</kbd><kbd>⇧</kbd><kbd>1</kbd> is already taken?</h3><p>macOS Lens then uses Control-Shift-1, or Control-Option-T if that is taken too.</p></div>
+        <div class="faq__item"><h3>Is it free?</h3><p>Yes, and the source is <a href="https://github.com/SharonHart/macos-lens">on GitHub</a>. If it saves you time, you can <a href="https://buymeacoffee.com/sharonhart">buy the developer a coffee</a>.</p></div>
+      </div>
+    </div>
+  </section>
+  <section class="section ground-surface" id="install" aria-labelledby="install-h">
+    <div class="wrap grid">
+      <div class="span-12 section-head"><h2 id="install-h">Install macOS Lens. <span class="muted">Free, for macOS 14 or later.</span></h2></div>
+      <div class="span-6 inst">
+        <div class="tabs" role="tablist" aria-label="Ways to install">
+          <button class="tab" role="tab" id="tab-curl" aria-controls="p-curl" aria-selected="true">Terminal</button>
+          <button class="tab" role="tab" id="tab-brew" aria-controls="p-brew" aria-selected="false">Homebrew</button>
+          <button class="tab" role="tab" id="tab-dmg" aria-controls="p-dmg" aria-selected="false">Disk image</button>
+        </div>
+        <div class="inst__panel" role="tabpanel" id="p-curl" aria-labelledby="tab-curl">
+          <div class="cmd"><pre><span class="p">$ </span><code>curl -fsSL https://raw.githubusercontent.com/SharonHart/macos-lens/main/scripts/install.sh | bash</code></pre><button class="copy" type="button" data-copy aria-label="Copy the command"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button></div>
+          <p>Downloads the latest release, checks its checksum and code signature, installs it and opens it. Run it again to update.</p>
+        </div>
+        <div class="inst__panel" role="tabpanel" id="p-brew" aria-labelledby="tab-brew" hidden>
+          <div class="cmd"><pre><span class="p">$ </span><code>brew tap SharonHart/macos-lens https://github.com/SharonHart/macos-lens
+brew trust --tap sharonhart/macos-lens
+brew install --cask macos-lens</code></pre><button class="copy" type="button" data-copy aria-label="Copy the command"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button></div>
+          <p>Homebrew 7 and later load a third-party tap only after you trust it. Update with <code>brew upgrade</code>.</p>
+        </div>
+        <div class="inst__panel" role="tabpanel" id="p-dmg" aria-labelledby="tab-dmg" hidden>
+          <p>Open the DMG and drag macOS Lens onto Applications. To build it yourself, run <code>./scripts/install.sh --from-source</code> in a clone.</p>
+          <div class="btn-row"><a class="btn btn--primary" href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Download the DMG</a><a class="btn btn--secondary" href="https://github.com/SharonHart/macos-lens/releases">All releases</a></div>
+        </div>
+        <h3 class="first__h">First launch on macOS</h3>
+        <ol class="first-run">
+          <li><b><i>1</i>Open Anyway</b><span>In System Settings › Privacy &amp; Security, click Open Anyway.</span></li>
+          <li><b><i>2</i>Screen Recording</b><span>Turn macOS Lens on under Screen &amp; System Audio Recording, then choose Quit &amp; Reopen.</span></li>
+          <li><b><i>3</i>After each update</b><span>Turn Screen Recording on again: macOS treats each ad-hoc signed build as a new app.</span></li>
+        </ol>
+      </div>
+      <div class="span-6 start-7 inst__shot">
+        <div class="sys ui ui-settings" role="img" aria-label="System Settings at Privacy and Security: macOS Lens switched on under Screen and System Audio Recording, and an Open Anyway button for macOS Lens under Security.">
+          <div class="sys__side">
+            <div class="sys__lights"><i></i><i></i><i></i></div>
+            <span class="sys__search">Search</span>
+            <span><b style="--c:#8e8e93"></b>General</span>
+            <span><b style="--c:#3a3a3c"></b>Appearance</span>
+            <span><b style="--c:#0a84ff"></b>Desktop &amp; Dock</span>
+            <span><b style="--c:#ff453a"></b>Notifications</span>
+            <span class="is-on"><b style="--c:#0a84ff"></b>Privacy &amp; Security</span>
+            <span><b style="--c:#8e8e93"></b>Keyboard</span>
+          </div>
+          <div class="sys__main">
+            <p class="sys__h">Privacy &amp; Security</p>
+            <div class="sys__group">
+              <div class="sys__row"><b style="--c:#0a84ff"></b>Location Services<em>On</em></div>
+              <div class="sys__row"><b style="--c:#0a84ff"></b>Accessibility</div>
+              <div class="sys__row"><b style="--c:#ff375f"></b>Screen &amp; System Audio Recording</div>
+              <div class="sys__app"><img src="assets/brand/app-icon-512.png" alt="">macOS Lens<span class="sys__n">2</span><i class="sys__toggle"></i></div>
+            </div>
+            <p class="sys__label">Security</p>
+            <div class="sys__group sys__blocked">
+              <p>“macOS Lens” was blocked to protect your Mac.</p>
+              <span class="sys__n">1</span><span class="sys__btn">Open Anyway</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer closing footer--dark ground-inverse" id="get" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--word">
+      <div class="section-head--split">
+        <div><h2 id="close-h">Try it on your own screen</h2><p class="t-lead">Free for macOS 14 or later. Once it is running, press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>2</kbd>.</p></div>
+        <a class="btn btn--primary" href="#install">Download for Mac<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+      </div>
+      <p class="close__word" aria-hidden="true"><img src="assets/brand/mark.svg" alt="">macOS Lens</p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-4 stack-4">
+          <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
+          <p class="footer__lede">Circle to Search for the Mac, from the menu bar.</p>
+        </div>
+        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li><a href="#watch">Watch</a></li><li><a href="#text">Text tools</a></li><li><a href="#privacy">Privacy</a></li><li><a href="#faq">FAQ</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Install</h3><ul><li><a href="#install">One-line installer</a></li><li><a href="#install">Homebrew</a></li><li><a href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Disk image</a></li></ul></div>
+        <div class="span-2 footer__col"><h3>Project</h3><ul><li><a href="https://github.com/SharonHart/macos-lens">Source on GitHub</a></li><li><a href="https://github.com/SharonHart/macos-lens/issues">Report an issue</a></li><li><a href="https://buymeacoffee.com/sharonhart">Buy Me a Coffee</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Sharon Hart</span>
+        <small>Not affiliated with Google or Apple. Google Lens and Circle to Search are trademarks of Google LLC; Mac and macOS of Apple Inc. Chair photo by Tetiana Shyshkina, Unsplash.</small>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
+<script type="module" src="assets/lens-demo.js"></script>
+</body>
+</html>

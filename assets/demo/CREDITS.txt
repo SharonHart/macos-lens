@@ -1,0 +1,4 @@
+chair.jpg
+  Photo: Tetiana Shyshkina, Unsplash (https://unsplash.com/photos/GjpxfnMOPcA)
+  Licence: Unsplash License (https://unsplash.com/license)
+  Changes: mirrored, cropped, resized.
