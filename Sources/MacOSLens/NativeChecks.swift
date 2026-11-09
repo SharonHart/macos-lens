@@ -1050,8 +1050,12 @@ enum NativeChecks {
     /// The shared mark at the sizes it is shown at, drawn offscreen at 1x and 2x, and where the app shows it. With a
     /// folder, also writes preview images of the menu bar, the launcher and Settings there.
     private static func markChecks(check: (Bool, String) -> Void, folder: URL?) throws {
-        check(LensMark.metrics(side: 18, scale: 1).stroke == 2 && LensMark.metrics(side: 18, scale: 2).stroke == 2,
-              "the 18 pt menu-bar mark has 2 pt corner strokes at 1x and 2x")
+        let menuBar = (LensMark.metrics(side: 18, scale: 1), LensMark.metrics(side: 18, scale: 2))
+        check(menuBar.0.stroke == 2 && menuBar.1.stroke == 2 && menuBar.0.arm == 5 && menuBar.1.arm == 5.5 &&
+              LensMark.cornerRadius(side: 100, stroke: 11, arm: 30) == 20 &&
+              abs(LensMark.cornerRadius(side: 18, stroke: 2, arm: 5) - 3.4) < 0.001,
+              "the mark follows the brand geometry: stroke 0.11 and arm 0.30 of the side, corner radius " +
+              "min(0.20, 0.85 × (arm − stroke/2)); 2 pt strokes and 5 pt arms in the 18 pt menu bar")
         for side in [16, 18, 22] as [CGFloat] {
             let image = LensMark.image(size: side)
             check(image.isTemplate && image.size == NSSize(width: side, height: side) &&
@@ -1071,6 +1075,9 @@ enum NativeChecks {
                 let crisp = ink(0, row) > 0.85 && ink(strokePixels - 1, row) > 0.85 && ink(strokePixels, row) < 0.15 &&
                     ink(n - 1, n - 1 - row) > 0.85 && ink(n - strokePixels, n - 1 - row) > 0.85 &&
                     ink(n - 1 - strokePixels, n - 1 - row) < 0.15
+                // Butt caps: the arms stop flat at their length, with no rounded cap beyond it.
+                let flat = ink(0, row - 1) < 0.15 && ink(strokePixels - 1, row - 1) < 0.15 &&
+                    ink(n - 1, n - row) < 0.15 && ink(n - strokePixels, n - row) < 0.15
                 let open = [ink(n / 2, n - 1), ink(n / 2, 0), ink(0, n / 2), ink(n - 1, n / 2)].allSatisfy { $0 < 0.1 }
                 let coverage = (0..<n).reduce(CGFloat(0)) { sum, y in sum + (0..<n).reduce(0) { $0 + ink($1, y) } } /
                     CGFloat(n * n)
@@ -1083,9 +1090,10 @@ enum NativeChecks {
                 let mismatch = body.reduce(CGFloat(0)) { sum, y in
                     sum + (0..<n / 2).reduce(0) { $0 + abs(ink($1, y) - ink(n - 1 - $1, y)) }
                 } / CGFloat(body.count * n / 2)
-                check(crisp && open && ink(n / 2, n / 2) > 0.9 && (0.15...0.55).contains(coverage) &&
+                check(crisp && flat && open && ink(n / 2, n / 2) > 0.9 && (0.15...0.55).contains(coverage) &&
                       (0.5...0.66).contains(height) && (0.45...0.62).contains(width) && mismatch < 0.03,
-                      "the \(Int(side)) pt mark at \(Int(scale))x has pixel-sharp corners and a solid centred apple " +
+                      "the \(Int(side)) pt mark at \(Int(scale))x has pixel-sharp corners with flat ends and a solid " +
+                      "centred apple " +
                       "with a symmetric body and no bite (apple \(fmt(height)) × \(fmt(width)) of the box, " +
                       "ink \(fmt(coverage)), asymmetry \(fmt(mismatch)))")
             }

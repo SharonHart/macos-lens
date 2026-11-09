@@ -1,6 +1,6 @@
 import AppKit
 
-/// The app's mark: four rounded viewfinder corners around an original apple, a round fruit with a dip on top, a short
+/// The app's mark: four rounded viewfinder corners, thick with flat ends like the selection brackets, around an original apple, a round fruit with a dip on top, a short
 /// stem and one leaf, and no bite. It is drawn from vector paths at the scale it is shown at, so it stays crisp at any
 /// size. Its images are templates and take the colour of the menu bar, button or image view that shows them.
 enum LensMark {
@@ -19,11 +19,16 @@ enum LensMark {
         return image
     }
 
-    /// Stroke width and corner arm length, measured from the outer edge, in points for a mark `side` points wide
-    /// shown at `scale` pixels per point. Both are whole pixels so straight edges land on pixel boundaries.
+    /// Stroke width and corner arm length, measured from the outer edge to the flat end, in points for a mark `side`
+    /// points wide shown at `scale` pixels per point. Both are whole pixels so straight edges land on pixel boundaries.
     static func metrics(side: CGFloat, scale: CGFloat) -> (stroke: CGFloat, arm: CGFloat) {
         func pixels(_ value: CGFloat) -> CGFloat { max(1, (value * scale).rounded()) / scale }
-        return (pixels(side * 0.11), pixels(side * 0.34))
+        return (pixels(side * 0.11), pixels(side * 0.30))
+    }
+
+    /// The corners' centre-line radius: a fifth of the side, capped so a short straight run remains before each end.
+    static func cornerRadius(side: CGFloat, stroke: CGFloat, arm: CGFloat) -> CGFloat {
+        min(side * 0.2, (arm - stroke / 2) * 0.85)
     }
 
     /// The apple's height as a share of the mark, including its stem and leaf.
@@ -43,7 +48,7 @@ enum LensMark {
 
         let (stroke, arm) = metrics(side: side, scale: scale)
         let inset = stroke / 2, reach = arm - inset
-        let radius = min(side * 0.2, reach - inset)
+        let radius = cornerRadius(side: side, stroke: stroke, arm: arm)
         let low = inset, high = side - inset
         let corners = NSBezierPath()
         let ends: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [(low, high, 1, -1), (high, high, -1, -1),
@@ -54,7 +59,7 @@ enum LensMark {
             corners.line(to: NSPoint(x: x + dx * reach, y: y))
         }
         corners.lineWidth = stroke
-        corners.lineCapStyle = .round
+        corners.lineCapStyle = .butt
         corners.lineJoinStyle = .round
         corners.transform(using: AffineTransform(translationByX: origin.x, byY: origin.y))
         corners.stroke()
