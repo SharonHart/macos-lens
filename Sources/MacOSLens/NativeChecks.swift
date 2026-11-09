@@ -104,8 +104,7 @@ enum NativeChecks {
             let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
             let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
-                                   controls: true, actions: actions)
+            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, controls: true, actions: actions)
             window.contentView = view
             view.layoutSubtreeIfNeeded()
             view.playIntro()
@@ -117,10 +116,9 @@ enum NativeChecks {
             // Activation: the frozen screen fills the display 1:1 with only the Android-style controls on top.
             check(view.canvas == bounds && image.width == Int(bounds.width) * 2 && view.layer?.backgroundColor?.alpha == 0,
                   "the Retina screenshot fills the display exactly, with no border, inset or scaling")
-            check(view.isWhole && view.pixelRect == full && !view.isDimmed &&
-                  near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)) &&
-                  near(view.framedRect, bounds.insetBy(dx: 10, dy: 10)),
-                  "the whole screen starts selected, shown as corner brackets with no border or dimming")
+            check(!view.hasSelection && view.selection == nil && view.searchKey == nil && view.bracketFrame == nil &&
+                  view.framedRect == nil && !view.isDimmed && changes.isEmpty && began == 0,
+                  "the overlay opens with nothing selected: no brackets, no dimming and no search scheduled")
             let lensImage = view.lensButton.image
             check(lensImage?.isTemplate == true && lensImage?.size == NSSize(width: 28, height: 28) &&
                   lensImage?.accessibilityDescription == LensMark.label && view.lensButton.contentTintColor == googleBlue,
@@ -132,8 +130,8 @@ enum NativeChecks {
                   "a search bar with “Add to your search” and Translate to its right floats at the bottom centre")
             check(!views(in: view).contains { $0 is NSSegmentedControl } && !view.field.isHidden &&
                   !buttons(in: view).contains { ["Search", "Text"].contains($0.title) } &&
-                  view.toastText == OverlayView.hintText,
-                  "there is no Search | Text toggle: one view, with a hint to circle, tap or highlight")
+                  view.toastText == OverlayView.hintText && OverlayView.hintText == "Circle, highlight or tap to search",
+                  "there is no Search | Text toggle: one view, with the hint “\(OverlayView.hintText)”")
             check(view.recognizing && view.textLayout == nil && view.cursor(at: wordPoint) == .crosshair,
                   "the screen's text is read on this Mac as soon as the overlay opens; until then presses select visually")
             check(view.closeFrame.minX < 40 && view.closeFrame.maxY > bounds.maxY - 32 - 60 &&
@@ -142,6 +140,15 @@ enum NativeChecks {
                   !view.panelShown && panel.alphaValue == 0 && !panel.frame.intersects(bounds) &&
                   view.actionChip.isHidden && view.selectTextChip.isHidden,
                   "there is no toolbar, text menu or results sheet until they are needed")
+
+            // Command-A frames the whole screen but sends nothing; only Return or the Lens button searches it.
+            view.selectWholeScreen()
+            check(view.isWhole && view.pixelRect == full && !view.isDimmed && changes.isEmpty &&
+                  near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)) &&
+                  near(view.framedRect, bounds.insetBy(dx: 10, dy: 10)) &&
+                  view.toastText == OverlayView.wholeScreenHint && visibility == [false],
+                  "Command-A frames the whole screen with corner brackets and no dimming, without searching it")
+            visibility.removeAll()
 
             // Results sheet: slides in on the right without covering the selection handles.
             view.revealPanel()
@@ -197,7 +204,7 @@ enum NativeChecks {
             // Circle, highlight, scribble and tap: the words read on this Mac decide what a gesture selects.
             changes.removeAll()
             view.selectWholeScreen()
-            check(view.isWhole && changes.count == 1 && changes[0].1 == false, "Command-A selects the whole screen again")
+            check(view.isWhole && changes.isEmpty, "Command-A selects the whole screen again, without searching it")
             let red = CGRect(x: 760, y: 160, width: 120, height: 120)
             let circle = (0...24).map { step -> CGPoint in
                 let angle = CGFloat(step) / 24 * 2 * .pi
@@ -313,8 +320,8 @@ enum NativeChecks {
             view.selectWholeScreen()
             view.zoom(by: 2, at: CGPoint(x: bounds.midX, y: bounds.midY))
             check(view.pixelRect == CGRect(x: 600, y: 350, width: 1200, height: 700) &&
-                  spin(until: { changes.count == 2 }, timeout: 2),
-                  "zooming the whole-screen selection searches only what is visible, after the gesture pauses")
+                  !spin(until: { !changes.isEmpty }, timeout: 1.2),
+                  "zooming the whole-screen selection keeps only what is visible selected and searches nothing")
             view.selectWholeScreen()
             check(!view.viewport.isZoomed && view.pixelRect == full, "Command-A also resets zoom")
 
@@ -368,7 +375,7 @@ enum NativeChecks {
             check(dismissed == 1, "pulling the sheet down closes it; scrolling up first does not")
 
             // Other displays: frozen, but without controls or a selection.
-            let other = OverlayView(frame: size, image: image, displayIndex: 1, selected: false, controls: false,
+            let other = OverlayView(frame: size, image: image, displayIndex: 1, controls: false,
                                     actions: actions)
             other.keyDown(with: key(36, "\r", in: window))
             check(other.selection == nil && other.searchKey == nil && other.panel == nil &&
@@ -376,15 +383,15 @@ enum NativeChecks {
 
             if let screen = NSScreen.screens.first {
                 let screenView = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
-                                             displayIndex: 0, selected: false, controls: true, actions: actions)
+                                             displayIndex: 0, controls: true, actions: actions)
                 let overlayWindow = OverlayWindow(screen: screen, overlay: screenView, escape: { cancelled += 1 })
                 check(overlayWindow.frame == screen.frame && !overlayWindow.isOpaque &&
                       overlayWindow.backgroundColor == .clear && overlayWindow.styleMask == [.borderless],
                       "each overlay window covers its display exactly, borderless and transparent")
                 changes.removeAll()
                 _ = overlayWindow.performKeyEquivalent(with: key(0, "a", flags: .command, in: overlayWindow))
-                check(screenView.isWhole && changes.count == 1 && !screenView.hasTextSelection,
-                      "Command-A selects the whole screen for visual search")
+                check(screenView.isWhole && changes.isEmpty && !screenView.hasTextSelection,
+                      "Command-A selects the whole screen without searching it")
                 let offered = spin(until: { screenView.textLayout != nil && !screenView.selectTextChip.isHidden },
                                    timeout: 20)
                 check(offered && screenView.selectTextButton?.title == "Select all text",
@@ -393,7 +400,7 @@ enum NativeChecks {
                 let all = screenView.selectedText
                 _ = overlayWindow.performKeyEquivalent(with: key(8, "c", flags: .command, in: overlayWindow))
                 check(all == "HELLO LENS 123" && board.string(forType: .string) == all &&
-                      screenView.toastText == "Copied" && changes.count == 1,
+                      screenView.toastText == "Copied" && changes.isEmpty,
                       "“Select all text” selects every word and Command-C copies it (to a private pasteboard here)")
                 overlayWindow.sendEvent(key(53, "\u{1b}", in: overlayWindow))
                 check(cancelled == 2, "Escape cancels from anywhere in the overlay window")
@@ -428,6 +435,7 @@ enum NativeChecks {
                             folder: snapshot?.deletingLastPathComponent())
             try markChecks(check: check, folder: snapshot?.deletingLastPathComponent())
             try panelLoadChecks(check: check, spin: spin)
+            try openChecks(check: check, spin: spin, gesture: gesture, suite: suite)
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -435,6 +443,48 @@ enum NativeChecks {
         check(NSPasteboard.general.changeCount == clipboard, "the user's clipboard was never touched")
         print("Native checks: \(failures) failures; no screen capture, upload or browser launch.")
         return failures == 0
+    }
+
+    // MARK: - Opening
+
+    /// Opening the overlay sends nothing: no upload, sheet or page until a gesture selects an area. Uploads are
+    /// counted by a stub that fails, so nothing leaves the Mac and no page is loaded.
+    private static func openChecks(check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
+                                   gesture: ([CGPoint], OverlayView) -> Void, suite: UserDefaults) throws {
+        guard let screen = NSScreen.screens.first else { return check(false, "a display is available for the checks") }
+        suite.set(true, forKey: "experimentalUpload")
+        defer { suite.removeObject(forKey: "experimentalUpload") }
+        let controller = AppController(defaults: suite, presentsOverlays: false)
+        var uploads = 0
+        controller.upload = { _, _ in
+            uploads += 1
+            throw LensError.message("The checks never upload.")
+        }
+        controller.showOverlays([(screen, try fixture())])
+        defer { controller.dismiss(restore: false) }
+        guard let view = controller.activeOverlay, let panel = view.panel else {
+            return check(false, "opening builds an overlay with a results sheet")
+        }
+        let debounce: TimeInterval = 1.2
+        _ = spin({ false }, debounce)
+        check(uploads == 0 && !view.hasSelection && !view.panelShown && panel.webView == nil &&
+              controller.searchState == .idle && view.toastText == OverlayView.hintText,
+              "opening the overlay and waiting \(fmt(debounce)) s uploads nothing, shows no sheet and loads no page")
+        view.selectWholeScreen()
+        _ = spin({ false }, debounce)
+        check(uploads == 0 && !view.panelShown, "Command-A alone sends nothing either")
+        controller.dismiss(restore: false)
+        check(!controller.isShowingOverlay && uploads == 0, "closing again without a gesture made no upload at all")
+
+        controller.showOverlays([(screen, try fixture())])
+        guard let next = controller.activeOverlay else { return check(false, "the overlay opens a second time") }
+        let box = next.bounds
+        gesture([CGPoint(x: box.width * 0.58, y: box.height * 0.18), CGPoint(x: box.width * 0.68, y: box.height * 0.3),
+                 CGPoint(x: box.width * 0.78, y: box.height * 0.45)], next)
+        check(next.hasSelection && !next.hasTextSelection && uploads == 0,
+              "a box around a picture selects it, and the upload waits for the pause after the gesture")
+        check(spin({ uploads == 1 }, debounce + 1) && next.panelShown,
+              "the first upload happens only after the gesture, and only once")
     }
 
     // MARK: - Results sheet loading
@@ -461,7 +511,7 @@ enum NativeChecks {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let view = OverlayView(frame: size, image: try fixture(), displayIndex: 0, topInset: 32,
-                               selected: true, controls: true, actions: OverlayActions())
+                               controls: true, actions: OverlayActions())
         window.contentView = view
         view.layoutSubtreeIfNeeded()
         guard let panel = view.panel else { return check(false, "the overlay has a results sheet") }
@@ -602,8 +652,7 @@ enum NativeChecks {
         let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
-                               controls: true, actions: actions)
+        let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, controls: true, actions: actions)
         window.contentView = view
         view.layoutSubtreeIfNeeded()
         func tap(_ point: CGPoint, clicks: Int = 1, flags: NSEvent.ModifierFlags = []) {
@@ -611,7 +660,7 @@ enum NativeChecks {
         }
 
         // Opening the overlay reads the whole frozen display on this Mac, off the main thread.
-        check(view.recognizing && view.toastText == OverlayView.hintText && !view.field.isHidden && view.isWhole,
+        check(view.recognizing && view.toastText == OverlayView.hintText && !view.field.isHidden && !view.hasSelection,
               "the screen's text is read on this Mac while the overlay opens, with the search bar and hint as usual")
         guard spin({ view.textLayout != nil }, 20), let layout = view.textLayout, !layout.isEmpty else {
             throw LensError.message("No text was recognized in the text fixture.")
@@ -803,8 +852,7 @@ enum NativeChecks {
         var quiet = OverlayActions()
         quiet.changed = { _, _ in uploads += 1 }
         quiet.textChanged = { preselected.append(($1, $2)) }
-        let shortcut = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
-                                   controls: true, selectingAllText: true, actions: quiet)
+        let shortcut = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, controls: true, selectingAllText: true, actions: quiet)
         check(spin({ shortcut.hasTextSelection }, 20) && shortcut.selectedText == layout.allText &&
               preselected.last?.search == false && uploads == 0 && !shortcut.field.isHidden &&
               shortcut.framedRect == nil && !shortcut.actionChip.isHidden,
@@ -812,7 +860,7 @@ enum NativeChecks {
 
         // The results sheet remembers the width the user drags it to.
         view.panel?.onResize?(700, true)
-        let next = OverlayView(frame: size, image: image, displayIndex: 0, selected: true, controls: true,
+        let next = OverlayView(frame: size, image: image, displayIndex: 0, controls: true,
                                actions: OverlayActions())
         check(suite.double(forKey: PanelSizing.defaultsKey) == 700 && next.panelFrame.width == 700,
               "a sheet width set by dragging is remembered for the next activation")
@@ -844,8 +892,7 @@ enum NativeChecks {
             let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             defer { window.close() }
-            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
-                                   controls: true, actions: OverlayActions())
+            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, controls: true, actions: OverlayActions())
             window.contentView = view
             view.layoutSubtreeIfNeeded()
             check(view.frameLayer.sublayers?.count == 1, "on \(name), the frame is a single layer of brackets")

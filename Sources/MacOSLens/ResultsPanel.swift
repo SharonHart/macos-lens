@@ -177,9 +177,9 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         let body = NSTextField(wrappingLabelWithString:
             "Visual search sends ONLY the area inside the selection to Google, through Google Lens's " +
             "undocumented upload endpoint (not an official API; it can stop working).\n\n" +
-            "The selection starts as your WHOLE SCREEN. After you allow it, the selected area is uploaded " +
-            "each time you finish circling or adjusting it, so select a smaller area first if anything private " +
-            "is visible.\n\n" +
+            "Opening the overlay sends nothing. After you allow it, the area you circle, box or tap is " +
+            "uploaded each time you finish adjusting it. Command-A frames the whole screen, which is sent only " +
+            "if you then press Return or the Lens button.\n\n" +
             "Screen capture and text recognition (OCR) stay on this Mac. The upload and results happen in " +
             "this sheet, which keeps its own Google cookies and optional sign-in, separate from your browser; " +
             "macOS Lens never reads your browser's cookies.")

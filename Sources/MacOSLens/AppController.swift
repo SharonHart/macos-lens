@@ -36,7 +36,19 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Waiting for the user to turn on Screen Recording in System Settings.
     private var awaitingScreenRecording = false
     private var permissionTimer: Timer?
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+    /// Checks build overlays without putting them on screen.
+    private let presentsOverlays: Bool
+    /// Sends the selected crop to Google Lens in the results sheet; checks count calls instead.
+    var upload: (ResultsPanel, CGImage) async throws -> URL = { panel, crop in
+        try await panel.search(LensUpload.request(for: crop), preview: crop)
+    }
+
+    init(defaults: UserDefaults = .standard, presentsOverlays: Bool = true) {
+        self.defaults = defaults
+        self.presentsOverlays = presentsOverlays
+        super.init()
+    }
 
     static let bundleID = "dev.macos-lens.client"
     private static let searchHotKey: UInt32 = 1
@@ -266,7 +278,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             let (screen, image) = frame
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
                                    displayIndex: index, topInset: screen.safeAreaInsets.top,
-                                   selected: index == active, controls: index == active,
+                                   controls: index == active,
                                    selectingAllText: selectingAllText && index == active, actions: actions)
             return OverlayWindow(screen: screen, overlay: view, escape: { [weak self] in self?.dismiss() })
         }
@@ -277,18 +289,20 @@ final class AppController: NSObject, NSApplicationDelegate {
         main.panel?.onOpen = { [weak self] url in self?.openInBrowser(url) }
         main.panel?.onDismiss = { [weak self] in self?.dismiss() }
         search.onChange = { [weak self] state in self?.liveSearchChanged(state) }
-        NSApp.activate(ignoringOtherApps: true)
-        for window in overlays { window.orderFrontRegardless() }
-        overlays[active].makeKey()
+        if presentsOverlays {
+            NSApp.activate(ignoringOtherApps: true)
+            for window in overlays { window.orderFrontRegardless() }
+            overlays[active].makeKey()
+        }
         for window in overlays { window.overlay.playIntro() }
+        // Nothing is selected or sent until the user circles, highlights or taps something.
         refreshPanel()
-        // The whole-screen selection is searched after the debounce unless the user starts selecting first.
-        if !selectingAllText { selectionChanged(main, immediately: false) }
     }
 
     private var uploadAllowed: Bool { defaults.bool(forKey: "experimentalUpload") }
     var searchState: LiveSearchState? { liveSearch?.state }
     var activeOverlay: OverlayView? { panelView }
+    var isShowingOverlay: Bool { !overlays.isEmpty }
 
     private func refreshPanel() {
         guard let liveSearch, !showingTextPage else { return }
@@ -337,17 +351,25 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         // Shown at its true shape while Google's results page lays out, including cached and refined results.
         panel.preview = crop
-        liveSearch.schedule(key, immediately: immediately) {
-            try await panel.search(LensUpload.request(for: crop), preview: crop)
-        }
+        let upload = self.upload
+        liveSearch.schedule(key, immediately: immediately) { try await upload(panel, crop) }
         // A cached result doesn't change the state, but the sheet may be showing a text page.
         refreshPanel()
         revealPanelIfWanted()
     }
 
-    /// Words typed in the search bar refine the visual search, like Android's multisearch.
+    /// Words typed in the search bar refine the visual search, like Android's multisearch. With nothing selected
+    /// they are searched as plain text, and no picture is sent.
     private func refine(_ view: OverlayView, query: String) {
         guard let panelView, let panel = panelView.panel else { return }
+        guard (selectedView ?? view).hasSelection else {
+            if query.isEmpty {
+                view.showWarning("Circle, highlight or tap something first")
+            } else {
+                textCommand(view, .search, text: query)
+            }
+            return
+        }
         panel.refinement = query
         if case .loaded = liveSearch?.state, uploadAllowed {
             showingTextPage = false
@@ -368,6 +390,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         } else {
             liveSearch?.cancel()
             showingTextPage = false
+            panelView?.hidePanel()
         }
     }
 
@@ -930,15 +953,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         mark.contentTintColor = googleBlue
         form.add(.item(mark, .fixed(32), height: 32), .item(label("Circle to Search, adapted for your Mac", bold: true)))
         form.add(.item(label(
-            "Press the shortcut or use the menu-bar Lens icon. The screen freezes in place and starts fully " +
-            "selected. Circle, scribble or tap something to search it; drag the corners or edges to adjust, and " +
+            "Press the shortcut or use the menu-bar Lens icon. The screen freezes in place with nothing selected " +
+            "and nothing sent. Circle, scribble or tap something to search it; drag the corners to adjust, and " +
             "drag inside to move. Click, highlight or circle text to select its words, then copy, listen, " +
             "translate or search them; the text shortcut opens it with all text selected. Pinch or scroll with " +
             "two fingers to zoom and pan. Escape, ✕ or swiping the results down closes it.")), gap: 10)
         form.add(.item(label(
             "Screen capture, text recognition, Listen and Apple translation stay on this Mac. Visual search sends " +
-            "ONLY the area inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you " +
-            "pause adjusting it. Selected text is searched as text, sending only those words, and only when " +
+            "ONLY the area you circle, box or tap to Google, each time you pause adjusting it; opening the " +
+            "overlay sends nothing. Selected text is searched as text, sending only those words, and only when " +
             "visual search is allowed; otherwise it asks first, as Google Translate does. " +
             "Your browser's cookies are never read and no public image host is used.")), gap: 10)
         let checkbox = NSButton(checkboxWithTitle: "Allow visual search (experimental Google Lens image upload)",

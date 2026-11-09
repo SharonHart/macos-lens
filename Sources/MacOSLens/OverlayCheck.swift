@@ -19,7 +19,11 @@ enum OverlayCheck {
         guard let view = controller.activeOverlay, let panel = view.panel, let window = view.window else {
             throw LensError.message("The overlay did not open with a results panel.")
         }
-        try expect(controller.searchState == .waiting, "the whole-display selection waits for the debounce")
+        try expect(controller.searchState == .idle && !view.hasSelection && !view.panelShown,
+                   "opening the overlay selects and uploads nothing")
+        view.selectWholeScreen()
+        controller.selectionChanged(view, immediately: false)
+        try expect(controller.searchState == .waiting, "the whole display, chosen explicitly, waits for the debounce")
         let first = try await results(controller, panel)
         print("PASS whole-display selection searched after the debounce: \(first.absoluteString.prefix(70))…")
 

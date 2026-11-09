@@ -177,10 +177,12 @@ final class OverlayView: NSView {
     private var busy = false
     private var tracking: NSTrackingArea?
 
-    static let hintText = "Circle or tap to search · highlight text to select it"
+    static let hintText = "Circle, highlight or tap to search"
+    static let wholeScreenHint = "Press Return to search the whole screen"
 
+    /// The overlay opens with nothing selected, so nothing is searched until a gesture picks an area.
     /// `selectingAllText` selects every recognized word once the text is read, as the Select text shortcut does.
-    init(frame: NSRect, image: CGImage, displayIndex: Int, topInset: CGFloat = 0, selected: Bool, controls: Bool,
+    init(frame: NSRect, image: CGImage, displayIndex: Int, topInset: CGFloat = 0, controls: Bool,
          selectingAllText: Bool = false, actions: OverlayActions) {
         self.image = image
         self.displayIndex = displayIndex
@@ -188,7 +190,7 @@ final class OverlayView: NSView {
         self.actions = actions
         hasControls = controls
         panel = controls ? ResultsPanel(frame: .zero) : nil
-        area = selected ? .screen : .none
+        area = .none
         super.init(frame: frame)
         wantsLayer = true
         layer?.backgroundColor = .clear
@@ -354,7 +356,7 @@ final class OverlayView: NSView {
     }
 
     var hasSelection: Bool { area != .none }
-    /// True while the selection is the whole visible screen (the default), drawn as brackets with no dimming.
+    /// True while the selection is the whole visible screen (Command-A), drawn as brackets with no dimming.
     var isWhole: Bool { area == .screen }
 
     /// The selection in view coordinates.
@@ -723,18 +725,19 @@ final class OverlayView: NSView {
         updateStage()
     }
 
-    /// Selects everything on this screen again (Command-A), resetting zoom.
+    /// Selects everything on this screen (Command-A), resetting zoom. Nothing is sent: the whole screen is searched
+    /// only when the user presses Return or the Lens button.
     @objc func selectWholeScreen() {
         clearTextSelection()
         hideSelectTextChip()
         actions.began(self)
+        actions.panelVisibility(self, false)
         viewport.reset()
         area = .screen
         warning = nil
-        hint = nil
+        hint = hasControls ? Self.wholeScreenHint : nil
         updateToast()
         updateStage()
-        actions.changed(self, false)
         updateSelectTextChip()
     }
 
@@ -744,7 +747,15 @@ final class OverlayView: NSView {
         actions.changed(self, true)
     }
 
-    @objc private func lensPressed() { textRange != nil ? searchSelectedText() : searchNow() }
+    @objc private func lensPressed() {
+        if textRange != nil {
+            searchSelectedText()
+        } else if !hasSelection, !refinement.isEmpty {
+            fieldSubmitted()
+        } else {
+            searchNow()
+        }
+    }
     /// Translate draws the translation over the recognized text in place, like Lens.
     @objc func translate() { beginTranslation() }
     @objc func cancelOverlay() { actions.cancel() }
@@ -780,15 +791,6 @@ final class OverlayView: NSView {
         updateStage()
         layoutChip()
         if !selectTextChip.isHidden { updateSelectTextChip() }
-        // The default selection follows what is visible, so a zoomed screen is searched once the gesture pauses.
-        guard isWhole, textRange == nil else { return }
-        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(visibleAreaSettled), object: nil)
-        perform(#selector(visibleAreaSettled), with: nil, afterDelay: 0.35)
-    }
-
-    @objc private func visibleAreaSettled() {
-        guard isWhole, textRange == nil else { return }
-        actions.changed(self, false)
     }
 
     override func magnify(with event: NSEvent) {
@@ -1152,7 +1154,7 @@ final class OverlayView: NSView {
         CATransaction.commit()
     }
 
-    /// A selection dragged back out to the screen edges becomes the default whole-screen selection again.
+    /// A selection dragged out to the screen edges becomes the whole-screen selection.
     private func normalizeWhole() {
         guard case .unit = area, !viewport.isZoomed, let selection,
               abs(selection.minX - bounds.minX) < 1, abs(selection.minY - bounds.minY) < 1,

@@ -38,8 +38,8 @@ Turn it on there, then choose **Quit & Reopen**. If the switch doesn't take effe
 **Fix Screen Recording permission…** in the menu bar or the launcher; it clears the stale entry and
 opens the right settings page.
 
-Press Command + Shift + 2 to open the lens: circle, box or tap anything to search it, and highlight,
-tap or circle text to select it. Command + Shift + 1 opens it with all the screen's text selected
+Press Command + Shift + 2 to open the lens. Nothing is selected or sent until you circle, box or tap
+something to search it; highlight, tap or circle text to select it. Command + Shift + 1 opens it with all the screen's text selected
 (Control + Shift + 1 or Control + Option + T when macOS already uses it). Change both in Settings.
 
 ## Uninstall

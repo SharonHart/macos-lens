@@ -101,7 +101,7 @@ enum PanelAspectCheck {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let view = OverlayView(frame: frame, image: try NativeChecks.fixture(), displayIndex: 0,
-                               topInset: 32, selected: true, controls: true, actions: OverlayActions())
+                               topInset: 32, controls: true, actions: OverlayActions())
         window.contentView = view
         if ProcessInfo.processInfo.environment["LENS_VISIBLE"] != nil {
             window.alphaValue = 0.03
