@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds a universal (Apple silicon + Intel) release of macOS Lens and packages it:
 #   dist/macOS-Lens-<version>.zip   app archive used by install.sh and the Homebrew cask
-#   dist/macOS-Lens-<version>.dmg   drag-to-Applications disk image
+#   dist/macOS-Lens-<version>.dmg   branded drag-to-Applications disk image (scripts/make-dmg.sh)
 #   dist/macOS-Lens.dmg             the same disk image without the version, for releases/latest/download links
 #   dist/SHA256SUMS                 checksums for all three
 # The version comes from Resources/Info.plist. The app is ad-hoc signed, and packaging never changes
@@ -59,19 +59,7 @@ step "Creating $NAME.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
-step "Creating $NAME.dmg"
-DMG_ROOT="$STAGE/dmg"
-mkdir -p "$DMG_ROOT"
-ditto "$APP" "$DMG_ROOT/macOS Lens.app"
-ln -s /Applications "$DMG_ROOT/Applications"
-rm -f "$DMG"
-hdiutil create -quiet -volname "macOS Lens" -srcfolder "$DMG_ROOT" -fs HFS+ -format UDZO -ov "$DMG"
-hdiutil verify -quiet "$DMG"
-rm -f "$LATEST_DMG"
-cp "$DMG" "$LATEST_DMG"
-
-step "Writing SHA256SUMS"
-(cd "$DIST" && shasum -a 256 "$NAME.zip" "$NAME.dmg" macOS-Lens.dmg >SHA256SUMS)
+bash scripts/make-dmg.sh "$APP"
 ZIP_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
 
 # Zips aren't byte-for-byte reproducible, so the cask must follow every package run.
