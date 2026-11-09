@@ -392,6 +392,12 @@ enum NativeChecks {
                 _ = overlayWindow.performKeyEquivalent(with: key(0, "a", flags: .command, in: overlayWindow))
                 check(screenView.isWhole && changes.isEmpty && !screenView.hasTextSelection,
                       "Command-A selects the whole screen without searching it")
+                let closedBefore = cancelled
+                let boardBefore = board.changeCount
+                _ = overlayWindow.performKeyEquivalent(with: key(8, "c", flags: .command, in: overlayWindow))
+                check(!spin(until: { cancelled != closedBefore }, timeout: OverlayView.copyCloseDelay + 0.3) &&
+                      board.changeCount == boardBefore,
+                      "with no text selected, Command-C neither copies nor closes the overlay")
                 let offered = spin(until: { screenView.textLayout != nil && !screenView.selectTextChip.isHidden },
                                    timeout: 20)
                 check(offered && screenView.selectTextButton?.title == "Select all text",
@@ -400,10 +406,14 @@ enum NativeChecks {
                 let all = screenView.selectedText
                 _ = overlayWindow.performKeyEquivalent(with: key(8, "c", flags: .command, in: overlayWindow))
                 check(all == "HELLO LENS 123" && board.string(forType: .string) == all &&
-                      screenView.toastText == "Copied" && changes.isEmpty,
-                      "“Select all text” selects every word and Command-C copies it (to a private pasteboard here)")
+                      screenView.toastText == "Copied" && changes.isEmpty && cancelled == closedBefore,
+                      "“Select all text” selects every word and Command-C copies it (to a private pasteboard here), " +
+                      "showing “Copied” first")
+                check(spin(until: { cancelled == closedBefore + 1 }, timeout: OverlayView.copyCloseDelay + 1) &&
+                      board.string(forType: .string) == all,
+                      "then Command-C closes the overlay the way Escape does, leaving the text on the pasteboard")
                 overlayWindow.sendEvent(key(53, "\u{1b}", in: overlayWindow))
-                check(cancelled == 2, "Escape cancels from anywhere in the overlay window")
+                check(cancelled == closedBefore + 2, "Escape cancels from anywhere in the overlay window")
                 overlayWindow.close()
             }
 
@@ -724,9 +734,12 @@ enum NativeChecks {
         check(view.selectedText == "brown fox\njumps over", "Shift-click extends the selection")
         press("Select all", view)
         check(view.selectedText == layout.allText, "Select all selects every word on the screen")
+        let closes = cancelled
         press("Copy", view)
-        check(board.string(forType: .string) == layout.allText && view.toastText == "Copied" &&
-              !view.actionChip.isHidden, "Copy keeps line breaks, says “Copied” and leaves the overlay open")
+        check(board.string(forType: .string) == layout.allText && view.toastText == "Copied" && cancelled == closes,
+              "the Copy button keeps line breaks and says “Copied” first")
+        check(spin({ cancelled == closes + 1 }, OverlayView.copyCloseDelay + 1),
+              "then Copy closes the overlay the way Escape does, like Command-C")
 
         // Things Lens offers for what is selected, detected on this Mac.
         tap(centre(email), clicks: 2)
@@ -837,14 +850,22 @@ enum NativeChecks {
               "Show original reveals the screenshot's own text")
         view.translateBar.originalToggle.performClick(nil)
         check(!view.showOriginal && !layer.isHidden, "turning Show original off shows the translation again")
+        view.clearTextSelection()
+        let copiesAll = cancelled
+        let offersAll = chip(view).contains("Copy all text")
+        press("Copy all text", view)
+        check(offersAll && board.string(forType: .string)?.contains("QUICK") == true &&
+              view.toastText == "Copied all text" && spin({ cancelled == copiesAll + 1 }, OverlayView.copyCloseDelay + 1),
+              "with nothing selected, “Copy all text” copies the translation and then closes the overlay too")
         view.translateBar.closeButton.performClick(nil)
         check(view.translatedLines == nil && view.translateBar.isHidden && layer.isHidden,
               "closing the translate bar returns to the original screen")
 
         check(searches == visualBefore + 1 && view.panel?.webView == nil && commands.allSatisfy { $0.0 == .search },
               "only the tap on empty space searched visually: no text path uploads the screenshot or loads a page")
+        let escapes = cancelled
         view.keyDown(with: key(53, "\u{1b}", [], window))
-        check(cancelled == 1, "Escape closes the overlay from a text selection too")
+        check(cancelled == escapes + 1, "Escape closes the overlay from a text selection too")
 
         // The Select text shortcut opens the same view with every word already selected.
         var preselected: [(text: String, search: Bool)] = []

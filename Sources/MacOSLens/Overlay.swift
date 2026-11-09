@@ -34,6 +34,7 @@ struct OverlayActions {
 final class OverlayWindow: NSWindow {
     let overlay: OverlayView
     private let escape: () -> Void
+    private(set) var isClosed = false
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
@@ -52,6 +53,11 @@ final class OverlayWindow: NSWindow {
         acceptsMouseMovedEvents = true
         contentView = overlay
         makeFirstResponder(overlay)
+    }
+
+    override func close() {
+        isClosed = true
+        super.close()
     }
 
     // Escape cancels even while the results page or the search field has keyboard focus.
@@ -78,7 +84,7 @@ final class OverlayWindow: NSWindow {
             overlay.selectWholeScreen()
             return true
         case "c" where firstResponder is OverlayView && (overlay.hasTextSelection || overlay.translatedLines != nil):
-            overlay.copyText()
+            overlay.copyAndClose()
             return true
         case "w", ".":
             escape()
@@ -1581,17 +1587,31 @@ extension OverlayView {
         actions.textChanged(self, selectedText, true)
     }
 
-    /// Copies the selection, or all text when nothing is selected, keeping its line breaks. The overlay stays open.
-    @objc func copyText() {
+    /// How long "Copied" shows before copying closes the overlay.
+    static var copyCloseDelay: TimeInterval = 0.25
+
+    /// Copies the selection, or all text when nothing is selected, keeping its line breaks.
+    @discardableResult func copyText() -> Bool {
         let text = textRange != nil ? selectedText : allShownText
         guard !text.isEmpty else {
             flash("No text to copy")
-            return
+            return false
         }
         let board = Self.pasteboard
         board.clearContents()
         board.setString(text, forType: .string)
         flash(textRange == nil ? "Copied all text" : "Copied")
+        return true
+    }
+
+    /// Copies, shows "Copied" briefly, then closes the overlay the way Escape does, so the previous app can paste at
+    /// once. Command-C, Copy and "Copy all text" all end here.
+    @objc func copyAndClose() {
+        guard copyText() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.copyCloseDelay) { [weak self] in
+            guard let self, (self.window as? OverlayWindow)?.isClosed != true else { return }
+            self.actions.cancel()
+        }
     }
 
     func searchSelectedText() {
@@ -1665,7 +1685,7 @@ extension OverlayView {
         var main: [ChipButton]
         var quick: [ChipButton] = []
         if let range = textRange {
-            let copy = ChipButton("Copy", symbol: "doc.on.doc") { [weak self] in self?.copyText() }
+            let copy = ChipButton("Copy", symbol: "doc.on.doc") { [weak self] in self?.copyAndClose() }
             let search = ChipButton("Search", symbol: "magnifyingglass") { [weak self] in self?.searchSelectedText() }
             main = translated ? [copy, selectAll, listen, search] : [copy, selectAll, listen, translate, search]
             let original = layout.text(for: range)
@@ -1676,7 +1696,7 @@ extension OverlayView {
                 })
             }
         } else {
-            let copyAll = ChipButton("Copy all text", symbol: "doc.on.doc") { [weak self] in self?.copyText() }
+            let copyAll = ChipButton("Copy all text", symbol: "doc.on.doc") { [weak self] in self?.copyAndClose() }
             main = translated || translating ? [copyAll, selectAll, listen] : [copyAll, selectAll, translate]
         }
         actionChip.set(groups: [main, quick])
