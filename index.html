@@ -56,7 +56,7 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
     <a class="skip-link" href="#top">Skip to content</a>
     <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
     <nav class="nav__links" aria-label="Main">
-      <div class="nav__item" data-reel-link hidden><a class="nav__link" href="#watch">Watch</a></div>
+      <div class="nav__item" data-reel-link><a class="nav__link" href="#watch">Watch</a></div>
       <div class="nav__item">
         <a class="nav__link" href="#text">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
         <div class="nav__menu">
@@ -166,9 +166,7 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
     </div></div>
   </section>
 
-  <!-- the reel ships with real v0.2.1 footage: until then this section and the two "Watch" links (data-reel-link) stay hidden,
-       and the video has no poster="assets/reel/poster.jpg" (a hidden video still fetches its poster) -->
-  <section class="section" id="watch" aria-labelledby="watch-h" hidden>
+  <section class="section" id="watch" aria-labelledby="watch-h">
     <div class="wrap">
       <div class="section-head"><h2 id="watch-h">Thirty seconds of the real app. <span class="muted">Recorded on macOS 26.</span></h2></div>
       <div class="grid watch">
@@ -178,16 +176,15 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
           <li><button type="button" data-t="2.4"><span>0:02</span>Circle a chair to search it</button></li>
           <li><button type="button" data-t="7.2"><span>0:07</span>Translate a menu</button></li>
           <li><button type="button" data-t="12"><span>0:12</span>Track a parcel from an email</button></li>
-          <li><button type="button" data-t="16.8"><span>0:16</span>Copy and search an error</button></li>
+          <li><button type="button" data-t="16.8"><span>0:16</span>Search an error</button></li>
           <li><button type="button" data-t="21.6"><span>0:21</span>Circle a paused video</button></li>
         </ol>
         <p class="watch__note">Recorded in the real app with a scripted pointer, on pages written for the demo.</p>
       </div>
       <div class="span-7 start-6 reel">
-        <video data-reel muted playsinline loop preload="none" width="1920" height="1080" aria-label="macOS Lens in use: freezing the screen, circling a chair to see visual matches, translating a menu, tracking a parcel from an email, copying an error and circling a paused video.">
-          <!-- the reel's sources go here once it is rendered (sha256-versioned):
-          <source media="(max-width: 639px)" src="assets/reel/reel-4x5.mp4?v=" type="video/mp4">
-          <source src="assets/reel/reel-16x9.mp4?v=" type="video/mp4"> -->
+        <video data-reel poster="assets/reel/poster.jpg?v=b3298170" muted playsinline loop preload="none" width="1920" height="1080" aria-label="macOS Lens in use: freezing the screen, circling a chair to search it, translating a menu, tracking a parcel from an email, searching an error and circling a paused video.">
+          <source media="(max-width: 639px)" src="assets/reel/reel-4x5.mp4?v=253aadcd" type="video/mp4">
+          <source src="assets/reel/reel-16x9.mp4?v=43cdfcff" type="video/mp4">
         </video>
         <button class="reel__pause" type="button" aria-pressed="false" aria-label="Pause the video">
           <svg class="i-pause" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1.5v11M11 1.5v11" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
@@ -473,7 +470,7 @@ brew install --cask macos-lens</code></pre><button class="copy" type="button" da
           <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
           <p class="footer__lede">Like Google Lens, on top of your Mac.</p>
         </div>
-        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li data-reel-link hidden><a href="#watch">Watch</a></li><li><a href="#text">Text tools</a></li><li><a href="#privacy">Privacy</a></li><li><a href="#faq">FAQ</a></li></ul></div>
+        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li data-reel-link><a href="#watch">Watch</a></li><li><a href="#text">Text tools</a></li><li><a href="#privacy">Privacy</a></li><li><a href="#faq">FAQ</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Install</h3><ul><li><a href="#install">One-line installer</a></li><li><a href="#install">Homebrew</a></li><li><a href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Disk image</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Project</h3><ul><li><a href="https://github.com/SharonHart/macos-lens">Source on GitHub</a></li><li><a href="https://github.com/SharonHart/macos-lens/issues">Report an issue</a></li><li><a href="https://buymeacoffee.com/sharonhart">Buy Me a Coffee</a></li></ul></div>
       </div>
