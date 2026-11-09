@@ -32,7 +32,12 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 .hero { background: radial-gradient(60% 55% at 72% 38%, color-mix(in oklab, var(--p-accent) 18%, transparent), transparent 70%); }
 .hero__eyebrow { display: inline-flex; align-items: center; gap: 12px; margin-bottom: var(--s-5); font: 600 18px/1 var(--font-text); color: var(--ink); }
 .hero__eyebrow img { width: 40px; height: 40px; flex: none; border-radius: 22%; box-shadow: 0 10px 24px -12px color-mix(in oklab, var(--p-accent) 70%, transparent); }
-.hero__text h1 { max-width: 11ch; }
+.hero__eyebrow { flex-wrap: wrap; row-gap: var(--s-2); }
+/* the first screen says it is unofficial, not only the FAQ */
+.hero__unofficial { margin-left: var(--s-1); padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 99px; font: 500 12px/1.3 var(--font-mono); color: var(--muted); text-wrap: balance; }
+/* two lines, "Like Google Lens," / "on top of your Mac", sized to the text column */
+.hero__text h1 { max-width: none; font-size: min(var(--ly-h1), 12.6vw - 6px); }
+.hero__text h1 .nowrap { white-space: nowrap; }
 .hero__text .hero__lead { margin-top: var(--s-5); max-width: 40ch; font-size: var(--t-lead); }
 .hero__text .btn-row { margin-top: var(--s-6); }
 .hero__text .cmd.cmd--hero { margin-top: var(--s-4); max-width: 34rem; align-items: center; padding: 4px 4px 4px 14px; border-radius: 12px; }
@@ -46,13 +51,17 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
   .hero--split .hero__grid > .hero__media.demo { grid-column: 6 / span 7; justify-content: flex-start; height: auto; }
   /* the frozen screen and its keys as wide as the first screen's height allows, on the right line */
   .hero .demo > :is(.lx, .keys) { width: min(100%, calc((100svh - 300px) * 1.6)); margin-left: auto; }
+  /* the text column is about 0.418vw - 83px wide, capped at 519px; the longer line is 7.65 font sizes wide */
+  .hero__text h1 { font-size: min(var(--ly-h1), 5.29vw - 10.5px, 66px); }
 }
 @media (max-width: 1023px) {
   .hero--split .hero__media.demo { flex: none; height: auto; min-height: 0; }
 }
 /* a phone has no keyboard or Terminal, so the keys and the command go and the frozen screen is the demo */
 @media (max-width: 639px) {
-  .hero__eyebrow, .hero .keys, .hero .cmd--hero { display: none; }
+  .hero__eyebrow img, .hero__name, .hero .keys, .hero .cmd--hero { display: none; }
+  .hero__eyebrow { margin-bottom: var(--s-4); }
+  .hero__unofficial { margin-left: 0; }
   .hero__text .hero__lead { margin-top: var(--s-4); font-size: 17px; line-height: 25px; }
   .hero__text .btn-row { margin-top: var(--s-5); flex-direction: row; align-items: center; }
 }
