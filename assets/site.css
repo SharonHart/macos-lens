@@ -487,3 +487,42 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 @media (max-width: 479px) { .nav__cta-x { display: none; } }
 html[data-buttons="pill"] .btn--secondary { background: transparent; border-color: color-mix(in oklab, var(--ink) 38%, transparent); }
 html[data-buttons="pill"] .btn--secondary:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); border-color: color-mix(in oklab, var(--ink) 60%, transparent); }
+
+/* Buy Me a Coffee: the service's own yellow and black, drawn here (no widget script, no remote image), and one
+   step smaller than Download (36 against 44) so Download stays the page's main action */
+.bmc { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex: none; height: var(--btn-h-sm); padding: 0 14px 0 11px;
+  border-radius: var(--r-btn); background: #ffdd00; color: #000; font: 600 14px/1 var(--font-text); white-space: nowrap;
+  transition: background-color var(--dur) var(--ease); }
+.bmc:hover { background: #f0cf00; }
+.bmc:active { transform: translateY(1px) scale(.985); }
+.bmc__cup { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+/* a laptop bar has no room for the words beside GitHub and Download for Mac: the cup alone, named by its label */
+@media (min-width: 1024px) and (max-width: 1439px) {
+  .nav__actions > .bmc { width: var(--btn-h-sm); padding: 0; }
+  .nav__actions > .bmc .bmc__x { display: none; }
+}
+/* and on the smallest laptops Download drops "for Mac", so the group stays clear of the centred words */
+@media (min-width: 1024px) and (max-width: 1139px) { .nav__actions .nav__cta-x { display: none; } }
+@media (max-width: 1023px) {
+  /* a tablet bar keeps the cup beside Download; a phone bar has room for Download and the menu button only */
+  .nav:not(.is-open) .nav__actions > a.bmc { display: inline-flex; width: 44px; height: 44px; padding: 0; }
+  .nav:not(.is-open) .nav__actions > a.bmc .bmc__x { display: none; }
+  /* the open sheet: Download across the foot, then Buy me a coffee and GitHub side by side */
+  .nav.is-open .nav__actions { grid-template-columns: 1fr 1fr; }
+  .nav.is-open .nav__actions > .btn--primary { grid-column: 1 / -1; }
+  .nav.is-open .nav__actions > .bmc { order: 1; height: var(--btn-h); font-size: 15px; }
+}
+@media (max-width: 639px) { .nav:not(.is-open) .nav__actions > a.bmc { display: none; } }
+/* the support line at the foot of Install */
+.support { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-4) var(--s-6);
+  margin-top: var(--s-7); padding-top: var(--s-5); border-top: 1px solid var(--line); }
+.support p { margin: 0; text-wrap: pretty; }
+/* side by side, Install is one fixed screen already full on its left: the line takes the foot of the
+   right column, under the Settings mock (now at the column's top), so the section grows by nothing */
+@media (min-width: 1024px) {
+  #install .inst, #install .inst__shot, #install .support { grid-row: 2; }
+  #install .inst__shot { align-self: start; }
+  #install .support { grid-column: 7 / -1; align-self: end; flex-wrap: nowrap; margin-top: 0; padding-top: var(--s-4); }
+  #install .support p { flex: 1 1 auto; min-width: 0; }
+  #install .support .muted { display: block; }
+}
