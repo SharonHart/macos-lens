@@ -100,7 +100,7 @@ enum PanelAspectCheck {
         let window = NSWindow(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let view = OverlayView(frame: frame, image: try NativeChecks.fixture(), displayIndex: 0, mode: .search,
+        let view = OverlayView(frame: frame, image: try NativeChecks.fixture(), displayIndex: 0,
                                topInset: 32, selected: true, controls: true, actions: OverlayActions())
         window.contentView = view
         if ProcessInfo.processInfo.environment["LENS_VISIBLE"] != nil {

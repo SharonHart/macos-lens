@@ -1,7 +1,7 @@
 import AppKit
 import LensCore
 
-/// Offscreen checks of the Circle to Search overlay and Text mode with generated images: no screen capture, upload or
+/// Offscreen checks of the Circle to Search overlay, its text selection and its frame with generated images: no screen capture, upload or
 /// browser, and nothing written to the user's clipboard or settings.
 @MainActor
 enum NativeChecks {
@@ -82,11 +82,13 @@ enum NativeChecks {
             print("Saved \(url.path)")
         }
 
+        func views(in view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { views(in: $0) } }
+
         do {
             let image = try fixture()
             var began = 0
             var changes: [(OverlayView, Bool)] = []
-            var modes: [CaptureMode] = []
+            var texts: [(text: String, search: Bool)] = []
             var requests: [TranslationRequest] = []
             var refinements: [String] = []
             var visibility: [Bool] = []
@@ -94,7 +96,7 @@ enum NativeChecks {
             var actions = OverlayActions()
             actions.began = { _ in began += 1 }
             actions.changed = { changes.append(($0, $1)) }
-            actions.modeChanged = { modes.append($1) }
+            actions.textChanged = { texts.append(($1, $2)) }
             actions.translate = { requests.append($1) }
             actions.refine = { refinements.append($1) }
             actions.panelVisibility = { visibility.append($1) }
@@ -102,20 +104,22 @@ enum NativeChecks {
             let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
             let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            let view = OverlayView(frame: size, image: image, displayIndex: 0, mode: .search, topInset: 32,
-                                   selected: true, controls: true, actions: actions)
+            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
+                                   controls: true, actions: actions)
             window.contentView = view
             view.layoutSubtreeIfNeeded()
             view.playIntro()
             let bounds = view.bounds
             let full = CGRect(x: 0, y: 0, width: image.width, height: image.height)
             let panel = view.panel!
+            let wordPoint = CGPoint(x: 290, y: 528)
 
             // Activation: the frozen screen fills the display 1:1 with only the Android-style controls on top.
             check(view.canvas == bounds && image.width == Int(bounds.width) * 2 && view.layer?.backgroundColor?.alpha == 0,
                   "the Retina screenshot fills the display exactly, with no border, inset or scaling")
             check(view.isWhole && view.pixelRect == full && !view.isDimmed && view.outlineFrame == nil &&
-                  near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)),
+                  near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)) &&
+                  near(view.framedRect, bounds.insetBy(dx: 10, dy: 10)),
                   "the whole screen starts selected, shown as corner brackets with no border or dimming")
             let lensImage = view.lensButton.image
             check(lensImage?.isTemplate == true && lensImage?.size == NSSize(width: 28, height: 28) &&
@@ -126,10 +130,12 @@ enum NativeChecks {
                   view.field.placeholderString == "Add to your search" && view.bar.superview === view &&
                   view.translateCard.superview === view && view.translateFrame.minX > view.barFrame.maxX,
                   "a search bar with “Add to your search” and Translate to its right floats at the bottom centre")
-            check(view.modeControl.segmentCount == 2 && view.modeControl.label(forSegment: 0) == "Search" &&
-                  view.modeControl.label(forSegment: 1) == "Text" && view.modeControl.selectedSegment == 0 &&
-                  view.modeControl.isDescendant(of: view.bar) && view.textLabel.isHidden,
-                  "a Search | Text toggle sits in the search bar, starting on Search")
+            check(!views(in: view).contains { $0 is NSSegmentedControl } && !view.field.isHidden &&
+                  !buttons(in: view).contains { ["Search", "Text"].contains($0.title) } &&
+                  view.toastText == OverlayView.hintText,
+                  "there is no Search | Text toggle: one view, with a hint to circle, tap or highlight")
+            check(view.recognizing && view.textLayout == nil && view.cursor(at: wordPoint) == .crosshair,
+                  "the screen's text is read on this Mac as soon as the overlay opens; until then presses select visually")
             check(view.closeFrame.minX < 40 && view.closeFrame.maxY > bounds.maxY - 32 - 60 &&
                   view.closeCard.superview === view, "an ✕ close button sits at the top left, below the menu bar")
             check(!buttons(in: view).contains { ["Draw", "Full screen"].contains($0.title) } &&
@@ -188,7 +194,7 @@ enum NativeChecks {
             view.dockPanel(left: false)
             view.hidePanel()
 
-            // Circle, highlight, scribble and tap.
+            // Circle, highlight, scribble and tap: the words read on this Mac decide what a gesture selects.
             changes.removeAll()
             view.selectWholeScreen()
             check(view.isWhole && changes.count == 1 && changes[0].1 == false, "Command-A selects the whole screen again")
@@ -199,35 +205,37 @@ enum NativeChecks {
             }
             var inked: CGRect?
             var liveOutline: CGRect?
+            var liveHues: Set<String> = []
             var dimmedWhileDrawing = true
             midDrag = {
                 inked = view.inkBounds
                 liveOutline = view.outlineFrame
                 dimmedWhileDrawing = view.isDimmed
+                if let live = liveOutline, let shot = Self.snapshot(view).flatMap(Bitmap.init) {
+                    liveHues = Self.googleHues(along: live, in: shot)
+                }
             }
             gesture(circle, on: view)
             check(inked.map { $0.width > 160 && $0.height > 160 } == true && view.inkBounds == nil,
                   "circling draws glowing ink that disappears when the finger lifts")
             check(liveOutline.map { $0.width > 160 && $0.height > 160 && $0.contains(red) } == true &&
-                  !dimmedWhileDrawing, "a full outline follows the area while it is being drawn")
+                  !dimmedWhileDrawing && liveHues.count >= 3,
+                  "the Lens frame, in Google colours (\(liveHues.sorted().joined(separator: ", "))), follows the " +
+                  "area while it is being drawn")
             check(view.selection.map { $0.contains(red) && $0.width < 200 } == true &&
                   near(view.bracketFrame, view.selection!) && near(view.outlineFrame, view.selection!, 1) &&
-                  view.isDimmed && changes.last?.1 == false,
-                  "a circle becomes a selection with corner brackets and a continuous border")
+                  view.isDimmed && changes.last?.1 == false && !view.hasTextSelection,
+                  "a circle around a picture becomes a framed selection that is searched visually")
             if let shot = Self.snapshot(view).flatMap(Bitmap.init) {
                 let selected = view.selection!
-                let left = Int(selected.minX.rounded()), y = Int(selected.minY + selected.height * 0.3)
-                let line = (left - 1...left + 1).map { shot.luma($0, y) }.max() ?? 0
-                let halo = (left - 4...left - 1).map { shot.luma($0, y) }.min() ?? 1
                 let outside = shot.luma(300, 300)
-                let within = shot.luma(Int(selected.minX + selected.width * 0.12),
-                                       Int(selected.minY + selected.height * 0.12))
+                let within = shot.luma(Int(selected.midX), Int(selected.minY + selected.height * 0.12))
                 let circleColour = shot.rgb(Int(red.midX), Int(red.midY))
+                let hues = Self.googleHues(along: selected, in: shot)
                 check(circleColour.r > 0.7 && circleColour.g < 0.45 && circleColour.b < 0.45,
                       "the rendered overlay is sampled the right way up")
-                check(line > 0.85 && halo < outside - 0.1,
-                      "the border is a white line on a dark halo, visible on light and dark pages " +
-                      "(line \(fmt(line)), halo \(fmt(halo)), page \(fmt(outside)))")
+                check(hues.count >= 3, "the released selection keeps the Google gradient border, brackets and grips " +
+                      "(\(hues.sorted().joined(separator: ", ")))")
                 check(abs(outside / within - (1 - OverlayView.dimAlpha)) < 0.07,
                       "outside a smaller selection is dimmed by about 35% (\(fmt(outside / within)) of the brightness)")
             } else {
@@ -245,31 +253,55 @@ enum NativeChecks {
                   "moving the selection under the sheet moves the sheet to the other side")
             view.hidePanel()
 
+            guard spin(until: { view.textLayout != nil }, timeout: 20), let layout = view.textLayout,
+                  let lens = layout.words.firstIndex(where: { $0.text == "LENS" }) else {
+                throw LensError.message("The fixture's text was not recognized.")
+            }
             view.selectWholeScreen()
+            check(layout.view(lens, in: view.canvas).contains(wordPoint) && view.cursor(at: wordPoint) == .iBeam &&
+                  view.cursor(at: CGPoint(x: 600, y: 300)) == .crosshair,
+                  "once the text is read, the cursor is an I-beam over words and a crosshair elsewhere")
+
+            // Highlighting a line or clicking a word goes straight to text selection, without any upload.
+            var count = changes.count
             gesture([CGPoint(x: 100, y: 528), CGPoint(x: 300, y: 530), CGPoint(x: 470, y: 527)], on: view)
-            let highlighted = view.selection
-            check(highlighted.map { $0.height >= 40 && $0.minX < 101 && $0.maxX > 469 } == true,
-                  "a highlight across a line of text selects the whole highlighted strip")
+            check(view.hasTextSelection && view.selectedText == "HELLO LENS 123" &&
+                  texts.last?.text == "HELLO LENS 123" && texts.last?.search == true && view.framedRect == nil &&
+                  !view.isDimmed && !view.actionChip.isHidden && changes.count == count,
+                  "a highlight along a line of text selects its words straight away and searches them as text")
+            click(wordPoint, on: view)
+            check(view.selectedText == "LENS" && texts.last?.text == "LENS" && texts.last?.search == true &&
+                  changes.count == count && ["Copy", "Listen", "Translate", "Search"].allSatisfy(chip(view).contains),
+                  "clicking a word selects it with handles and the text menu")
+            click(wordPoint, on: view, clicks: 2)
+            check(view.selectedText == "HELLO LENS 123" && changes.count == count, "double-clicking a word selects its line")
 
-            // Lens's "Select text": circled words open in Text mode, already selected.
-            check(spin(until: { !view.selectTextChip.isHidden }, timeout: 20) && view.selectTextButton != nil &&
-                  view.selectTextChip.frame.maxY <= (highlighted?.minY ?? 0) + 14,
-                  "a “Select text” chip appears next to a selection that contains text")
+            // Tapping a picture leaves text for visual search; tapping a word switches back.
+            click(CGPoint(x: red.midX, y: red.midY), on: view)
+            check(!view.hasTextSelection && view.actionChip.isHidden && spin(until: { changes.count > count }) &&
+                  view.selection.map { $0.contains(CGPoint(x: red.midX, y: red.midY)) && $0.width < 400 } == true &&
+                  view.framedRect != nil && changes.last?.1 == false,
+                  "tapping a picture leaves text selection and selects the object, found on this Mac, for visual search")
+            let objectArea = view.selection
+            count = changes.count
+            click(wordPoint, on: view)
+            check(view.selectedText == "LENS" && view.framedRect == nil && view.selection == objectArea &&
+                  changes.count == count, "clicking a word outside the area switches to text, keeping the area")
+            gesture(circle, on: view)
+            check(!view.hasTextSelection && view.framedRect != nil && changes.count == count + 1 &&
+                  changes.last?.1 == false, "circling a picture again clears the text and searches the area visually")
+
+            // A box around a picture and some text: the picture wins, and the words are offered.
+            count = changes.count
+            gesture([CGPoint(x: 70, y: 590), CGPoint(x: 500, y: 360), CGPoint(x: 930, y: 130)], on: view)
+            check(spin(until: { !view.selectTextChip.isHidden }, timeout: 20) && !view.hasTextSelection &&
+                  view.selectTextButton?.title == "Select text" && changes.count == count + 1 &&
+                  changes.last?.1 == false,
+                  "a box around a picture and some text searches visually and offers “Select text”")
             view.selectTextButton?.performClick(nil)
-            check(view.mode == .text && view.selectedText == "HELLO LENS 123" && modes.last == .text &&
-                  view.selectTextChip.isHidden && view.modeControl.selectedSegment == 1,
-                  "“Select text” switches to Text mode with the circled words selected")
-            view.setMode(.search)
-            check(view.mode == .search && near(view.selection, highlighted ?? .null) && view.textRange == nil &&
-                  view.actionChip.isHidden, "switching back to Search keeps the circled area")
-
-            view.selectWholeScreen()
-            let count = changes.count
-            let tap = CGPoint(x: 290, y: 528)
-            gesture([tap, tap], on: view)
-            check(spin(until: { changes.count > count }) && view.selection.map {
-                $0.contains(tap) && $0.width > 250 && $0.height < 110
-            } == true, "tapping text selects its line, found on this Mac with Apple Vision")
+            check(view.selectedText == "HELLO LENS 123" && view.selectTextChip.isHidden &&
+                  texts.last?.text == "HELLO LENS 123" && texts.last?.search == true && changes.count == count + 1,
+                  "“Select text” selects the words in the area and searches them as text")
 
             // Zoom and pan never change which pixels are searched.
             let tapped = view.pixelRect
@@ -281,20 +313,6 @@ enum NativeChecks {
                   "pinch-zooming enlarges the screenshot and keeps the selected pixels")
             view.pan(by: CGVector(dx: -200, dy: 80))
             check(view.pixelRect == tapped && view.canvas.contains(bounds), "two-finger panning keeps the selection on its pixels")
-
-            // The Search | Text toggle keeps the same frozen screenshot, zoom and selection.
-            let zoomedCanvas = view.canvas
-            let searches = changes.count
-            view.modeControl.selectedSegment = 1
-            view.modeControl.sendAction(view.modeControl.action, to: view.modeControl.target)
-            check(view.mode == .text && view.image === image && view.canvas == zoomedCanvas && view.pixelRect == tapped &&
-                  view.field.isHidden && !view.textLabel.isHidden && modes.last == .text,
-                  "switching to Text keeps the screenshot and zoom, and the bar shows the text status")
-            view.modeControl.selectedSegment = 0
-            view.modeControl.sendAction(view.modeControl.action, to: view.modeControl.target)
-            check(view.mode == .search && view.canvas == zoomedCanvas && view.pixelRect == tapped &&
-                  !view.field.isHidden && view.textLabel.isHidden && changes.count == searches,
-                  "switching back to Search keeps them too, without starting another search")
 
             changes.removeAll()
             view.selectWholeScreen()
@@ -310,10 +328,10 @@ enum NativeChecks {
             view.fieldSubmitted()
             check(refinements == ["red shoes"], "Return in the search bar refines the search with the typed words")
             view.translateButton.performClick(nil)
-            check(view.mode == .text && requests.count == 1 && requests[0].blocks.contains { $0.contains("HELLO") },
-                  "Translate switches to Text mode and translates the recognized text in place")
+            check(requests.count == 1 && requests[0].blocks.contains { $0.contains("HELLO") } &&
+                  !view.translateBar.isHidden && view.isWhole,
+                  "Translate next to the bar translates the whole screen's text in place")
             view.endTranslation()
-            view.setMode(.search)
             changes.removeAll()
             view.keyDown(with: key(36, "\r", in: window))
             check(changes.count == 1 && changes[0].1, "Return searches the selection immediately")
@@ -355,31 +373,33 @@ enum NativeChecks {
             check(dismissed == 1, "pulling the sheet down closes it; scrolling up first does not")
 
             // Other displays: frozen, but without controls or a selection.
-            let other = OverlayView(frame: size, image: image, displayIndex: 1, mode: .search, selected: false,
-                                    controls: false, actions: actions)
+            let other = OverlayView(frame: size, image: image, displayIndex: 1, selected: false, controls: false,
+                                    actions: actions)
             other.keyDown(with: key(36, "\r", in: window))
             check(other.selection == nil && other.searchKey == nil && other.panel == nil &&
                   other.bar.superview == nil, "other displays start without a selection or controls")
 
             if let screen = NSScreen.screens.first {
                 let screenView = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
-                                             displayIndex: 0, mode: .search, selected: false, controls: true,
-                                             actions: actions)
+                                             displayIndex: 0, selected: false, controls: true, actions: actions)
                 let overlayWindow = OverlayWindow(screen: screen, overlay: screenView, escape: { cancelled += 1 })
                 check(overlayWindow.frame == screen.frame && !overlayWindow.isOpaque &&
                       overlayWindow.backgroundColor == .clear && overlayWindow.styleMask == [.borderless],
                       "each overlay window covers its display exactly, borderless and transparent")
                 changes.removeAll()
                 _ = overlayWindow.performKeyEquivalent(with: key(0, "a", flags: .command, in: overlayWindow))
-                check(screenView.isWhole && changes.count == 1, "Command-A selects the whole screen")
-                screenView.setMode(.text)
-                let read = spin(until: { screenView.textLayout != nil }, timeout: 20)
-                _ = overlayWindow.performKeyEquivalent(with: key(0, "a", flags: .command, in: overlayWindow))
+                check(screenView.isWhole && changes.count == 1 && !screenView.hasTextSelection,
+                      "Command-A selects the whole screen for visual search")
+                let offered = spin(until: { screenView.textLayout != nil && !screenView.selectTextChip.isHidden },
+                                   timeout: 20)
+                check(offered && screenView.selectTextButton?.title == "Select all text",
+                      "the whole-screen selection offers “Select all text” once the words are read")
+                screenView.selectTextButton?.performClick(nil)
                 let all = screenView.selectedText
                 _ = overlayWindow.performKeyEquivalent(with: key(8, "c", flags: .command, in: overlayWindow))
-                check(read && all == "HELLO LENS 123" && board.string(forType: .string) == all &&
+                check(all == "HELLO LENS 123" && board.string(forType: .string) == all &&
                       screenView.toastText == "Copied" && changes.count == 1,
-                      "in Text mode Command-A selects all text and Command-C copies it (to a private pasteboard here)")
+                      "“Select all text” selects every word and Command-C copies it (to a private pasteboard here)")
                 overlayWindow.sendEvent(key(53, "\u{1b}", in: overlayWindow))
                 check(cancelled == 2, "Escape cancels from anywhere in the overlay window")
                 overlayWindow.close()
@@ -409,6 +429,8 @@ enum NativeChecks {
             try textChecks(check: check, spin: spin, gesture: gesture, click: click, chip: chip, press: press,
                            midDrag: { midDrag = $0 }, key: key, save: save, board: board, speaker: speaker,
                            suite: suite)
+            try frameChecks(check: check, gesture: gesture, midDrag: { midDrag = $0 },
+                            folder: snapshot?.deletingLastPathComponent())
             try markChecks(check: check, folder: snapshot?.deletingLastPathComponent())
             try panelLoadChecks(check: check, spin: spin)
         } catch {
@@ -443,7 +465,7 @@ enum NativeChecks {
         let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let view = OverlayView(frame: size, image: try fixture(), displayIndex: 0, mode: .search, topInset: 32,
+        let view = OverlayView(frame: size, image: try fixture(), displayIndex: 0, topInset: 32,
                                selected: true, controls: true, actions: OverlayActions())
         window.contentView = view
         view.layoutSubtreeIfNeeded()
@@ -553,10 +575,11 @@ enum NativeChecks {
               "ordinary pages opened in the sheet are shown directly, never covered")
     }
 
-    // MARK: - Text mode
+    // MARK: - Text
 
-    /// Text mode on a multi-line fixture: recognition, marking, handles, the action menu, translation in place and
-    /// Escape, all offscreen and without any upload.
+    /// Text in the one overlay view on a multi-line fixture: recognition on open, words, lines and paragraphs,
+    /// circles around text, handles, the action menu, translation in place and Escape, all offscreen. No text path
+    /// starts a visual search, loads a page or uploads the screenshot.
     private static func textChecks(
         check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
         gesture: ([CGPoint], OverlayView) -> Void,
@@ -568,14 +591,14 @@ enum NativeChecks {
     ) throws {
         let image = try textFixture()
         var searches = 0
-        var modes: [CaptureMode] = []
+        var texts: [(text: String, search: Bool)] = []
         var commands: [(TextCommand, String)] = []
         var requests: [TranslationRequest] = []
         var quick: [String] = []
         var cancelled = 0
         var actions = OverlayActions()
         actions.changed = { _, _ in searches += 1 }
-        actions.modeChanged = { modes.append($1) }
+        actions.textChanged = { texts.append(($1, $2)) }
         actions.textCommand = { commands.append(($1, $2)) }
         actions.translate = { requests.append($1) }
         actions.quick = { quick.append($1.title) }
@@ -584,18 +607,17 @@ enum NativeChecks {
         let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
-        let view = OverlayView(frame: size, image: image, displayIndex: 0, mode: .text, topInset: 32,
-                               selected: true, controls: true, actions: actions)
+        let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
+                               controls: true, actions: actions)
         window.contentView = view
         view.layoutSubtreeIfNeeded()
         func tap(_ point: CGPoint, clicks: Int = 1, flags: NSEvent.ModifierFlags = []) {
             click(point, view, clicks, flags)
         }
 
-        // Entering Text mode reads the whole frozen display on this Mac, off the main thread.
-        check(view.mode == .text && view.recognizing && view.toastText == "Finding text…" && view.field.isHidden &&
-              !view.textLabel.isHidden && view.modeControl.selectedSegment == 1 && modes.isEmpty,
-              "opening straight into Text mode shows “Finding text…” while Apple Vision reads the screen")
+        // Opening the overlay reads the whole frozen display on this Mac, off the main thread.
+        check(view.recognizing && view.toastText == OverlayView.hintText && !view.field.isHidden && view.isWhole,
+              "the screen's text is read on this Mac while the overlay opens, with the search bar and hint as usual")
         guard spin({ view.textLayout != nil }, 20), let layout = view.textLayout, !layout.isEmpty else {
             throw LensError.message("No text was recognized in the text fixture.")
         }
@@ -605,8 +627,9 @@ enum NativeChecks {
             let box = layout.view(index, in: view.canvas)
             return CGPoint(x: box.midX, y: box.midY)
         }
-        guard let quickWord = word("quick"), let brown = word("brown"), let fox = word("fox"), let over = word("over"),
-              let lazy = word("lazy"), let dog = word("dog"), let good = word("Good"),
+        guard let the = word("The"), let quickWord = word("quick"), let brown = word("brown"), let fox = word("fox"),
+              let jumps = word("jumps"), let over = word("over"), word("lazy") != nil, let dog = word("dog"),
+              let good = word("Good"), let write = word("Write"),
               let email = layout.words.firstIndex(where: { $0.text.contains("@") }) else {
             throw LensError.message("The text fixture was read as \(layout.words.map { $0.text }).")
         }
@@ -614,38 +637,37 @@ enum NativeChecks {
         check(layout.blocks.count == 3 && layout.allText.hasPrefix(paragraph + "\n\n") &&
               layout.allText.hasSuffix("\n\nGood morning"),
               "words are joined in reading order with line breaks inside paragraphs and blank lines between them")
-        check(view.toastText == OverlayView.textHint && view.textSurface.words.path?.isEmpty == false &&
-              !view.isDimmed && abs((view.textSurface.dim.fillColor?.alpha ?? 1) - TextSurface.dimAlpha) < 0.01 &&
-              TextSurface.dimAlpha < OverlayView.dimAlpha && !view.textSurface.isHidden,
-              "every word gets a subtle highlight, other areas are dimmed only lightly, and a hint explains what to do")
+        check(view.textSurface.words.path?.isEmpty == false && view.textSurface.words.opacity == 0 &&
+              !view.isDimmed && view.cursor(at: centre(quickWord)) == .iBeam &&
+              view.cursor(at: CGPoint(x: 900, y: 300)) == .crosshair,
+              "words are not marked permanently; the cursor is an I-beam over them and a crosshair elsewhere")
 
-        // Marking text like a text cursor.
+        // Marking text like a text cursor, in the same view.
         tap(centre(quickWord))
-        check(view.selectedText == "quick" && view.textLabel.stringValue == "1 word selected" &&
-              ["Copy", "Select all", "Listen", "Translate", "Search"].allSatisfy(chip(view).contains),
-              "clicking a word selects it and shows Copy, Select all, Listen, Translate and Search")
+        check(view.selectedText == "quick" && texts.last?.text == "quick" && texts.last?.search == true &&
+              view.framedRect == nil && ["Copy", "Select all", "Listen", "Translate", "Search"].allSatisfy(chip(view).contains),
+              "clicking a word selects it, searches it as text and shows Copy, Select all, Listen, Translate and Search")
         var hiddenWhileDragging = false
         midDrag { hiddenWhileDragging = view.actionChip.isHidden }
-        gesture([centre(quickWord), centre(fox), centre(lazy)], view)
-        let dragged = view.textRange.map { layout.lineRects(for: $0, canvas: view.canvas) } ?? []
-        let covered = dragged.reduce(CGRect.null) { $0.union($1) }
-        check(view.selectedText == "quick brown fox\njumps over the lazy" && dragged.count == 2 &&
-              view.textSurface.selection.path?.isEmpty == false && view.textSurface.handles.path?.isEmpty == false,
-              "dragging across words selects them in reading order, highlighted per line, with two handles")
-        check(hiddenWhileDragging && !view.actionChip.isHidden && !view.actionChip.frame.intersects(covered) &&
-              view.bounds.contains(view.actionChip.frame),
-              "the action menu hides while dragging and then floats next to the selection, on screen")
-        try save(view, "text")
-
+        gesture([centre(quickWord), centre(brown), centre(fox)], view)
+        check(view.selectedText == "quick brown fox" && view.textSurface.selection.path?.isEmpty == false &&
+              view.textSurface.handles.path?.isEmpty == false && hiddenWhileDragging && !view.actionChip.isHidden,
+              "pressing a word and dragging along its line selects whole words with handles; the menu waits for release")
         if let range = view.textRange, let ends = layout.handlePoints(for: range, canvas: view.canvas) {
             let end = TextSurface.knobCenter(ends.end)
-            gesture([end, CGPoint(x: (end.x + centre(dog).x) / 2, y: end.y), CGPoint(x: centre(dog).x, y: end.y)], view)
+            let down = centre(dog).y - centre(fox).y
+            gesture([end, CGPoint(x: (end.x + centre(dog).x) / 2, y: end.y + down / 2),
+                     CGPoint(x: centre(dog).x, y: end.y + down)], view)
             let extended = view.selectedText
+            let lines = view.textRange.map { layout.lineRects(for: $0, canvas: view.canvas) } ?? []
+            let covered = lines.reduce(CGRect.null) { $0.union($1) }
+            check(extended == "quick brown fox\njumps over the lazy dog" && lines.count == 2 &&
+                  !view.actionChip.frame.intersects(covered) && view.bounds.contains(view.actionChip.frame),
+                  "dragging the end handle extends the selection across lines, highlighted per line, menu beside it")
+            try save(view, "text")
             let begin = TextSurface.knobCenter(ends.start)
             gesture([begin, CGPoint(x: centre(brown).x, y: begin.y)], view)
-            check(extended == "quick brown fox\njumps over the lazy dog" &&
-                  view.selectedText == "brown fox\njumps over the lazy dog",
-                  "dragging the end and start handles changes the selected range")
+            check(view.selectedText == "brown fox\njumps over the lazy dog", "dragging the start handle moves the start")
         } else {
             check(false, "the selection has start and end handles")
         }
@@ -678,17 +700,48 @@ enum NativeChecks {
         check(commands.count == 1 && commands[0].0 == .search && commands[0].1 == "Write to hello@example.com",
               "Search hands only the selected text to the app")
 
-        // Circling still works in Text mode, and a tap on empty space clears the selection.
+        // Circling, boxing or scribbling over text goes straight to text selection, as Lens does.
+        func loop(around first: Int, _ last: Int, padding: CGSize) -> [CGPoint] {
+            let box = layout.view(first, in: view.canvas).union(layout.view(last, in: view.canvas))
+            return (0...32).map { step in
+                let angle = CGFloat(step) / 32 * 2 * .pi
+                return CGPoint(x: box.midX + cos(angle) * (box.width / 2 + padding.width),
+                               y: box.midY + sin(angle) * (box.height / 2 + padding.height))
+            }
+        }
+        let loose = CGSize(width: 30, height: 14), snug = CGSize(width: 24, height: 8)
+        // Vision may read the address as one word or split it at the "@".
+        let emailLineEnd = layout.lines[layout.words[email].line].words.upperBound - 1
+        let circles: [(String, [CGPoint], String)] = [
+            ("a paragraph", loop(around: the, dog, padding: loose), paragraph),
+            ("a single line", loop(around: jumps, dog, padding: snug), "jumps over the lazy dog"),
+            ("a phrase", loop(around: brown, fox, padding: snug), "brown fox"),
+            ("a line with an email address", loop(around: write, emailLineEnd, padding: snug),
+             "Write to hello@example.com"),
+            ("light text on a dark band", loop(around: good, good + 1, padding: snug), "Good morning")
+        ]
         var inked = false
-        midDrag { inked = view.inkBounds != nil }
-        gesture([CGPoint(x: 60, y: 600), CGPoint(x: 380, y: 540), CGPoint(x: 700, y: 470)], view)
-        check(inked && view.inkBounds == nil && view.selectedText == paragraph,
-              "circling or boxing empty space selects every word inside")
+        for (name, points, expected) in circles {
+            let before = searches
+            inked = false
+            midDrag { inked = view.inkBounds != nil }
+            gesture(points, view)
+            let selected = spin({ view.hasTextSelection }, 10)
+            check(selected && inked && view.inkBounds == nil && view.selectedText == expected &&
+                  texts.last?.text == expected && texts.last?.search == true && searches == before &&
+                  view.framedRect == nil && view.selectTextChip.isHidden,
+                  "circling \(name) selects its words straight away and searches them as text " +
+                  "(“\(view.selectedText.replacingOccurrences(of: "\n", with: " ⏎ "))”)")
+        }
+        let box = [CGPoint(x: 60, y: 620), CGPoint(x: 380, y: 540), CGPoint(x: 720, y: 480)]
+        gesture(box, view)
+        check(spin({ view.hasTextSelection }, 10) && view.selectedText == paragraph && searches == 0,
+              "a box dragged around a paragraph selects it as text too")
+
+        let visualBefore = searches
         tap(CGPoint(x: 900, y: 300))
-        check(view.textRange == nil && chip(view).contains("Copy all text"), "tapping empty space clears the selection")
-        press("Copy all text", view)
-        check(board.string(forType: .string) == layout.allText && view.toastText == "Copied all text",
-              "with nothing selected, Copy all text copies everything")
+        check(view.textRange == nil && view.actionChip.isHidden && spin({ searches == visualBefore + 1 }, 5) &&
+              view.framedRect != nil, "tapping empty space leaves text selection and goes back to visual search")
 
         // Highlights and hit-testing follow zoom.
         tap(centre(quickWord))
@@ -704,12 +757,12 @@ enum NativeChecks {
         check(view.canvas == view.bounds, "zooming back out restores the 1:1 screen")
 
         // Translate in place, on this Mac when Apple's translation is available.
-        tap(CGPoint(x: 900, y: 300))
         press("Translate", view)
         let request = requests.last
-        check(requests.count == 1 && request?.blocks.count == layout.blocks.count && request?.text == layout.allText &&
+        check(requests.count == 1 && request?.blocks.count == layout.blocks.count && request?.text == "brown" &&
               !view.translateBar.isHidden && view.toastText == "Translating…",
-              "Translate sends each paragraph, as flowing text, to the translator and shows progress")
+              "Translate sends each paragraph, as flowing text, to the translator and shows progress; only the " +
+              "selected words are kept for the web fallback")
         view.applyTranslation(blocks: (request?.blocks ?? []).map { $0.uppercased() })
         let layer = view.textSurface.translation
         check(view.translatedLines != nil && !layer.isHidden && layer.frame == view.canvas && layer.contents != nil &&
@@ -744,17 +797,138 @@ enum NativeChecks {
         check(view.translatedLines == nil && view.translateBar.isHidden && layer.isHidden,
               "closing the translate bar returns to the original screen")
 
-        check(searches == 0 && view.panel?.webView == nil && commands.allSatisfy { $0.0 == .search },
-              "Text mode never starts a visual search or loads a page; the screenshot is never uploaded")
+        check(searches == visualBefore + 1 && view.panel?.webView == nil && commands.allSatisfy { $0.0 == .search },
+              "only the tap on empty space searched visually: no text path uploads the screenshot or loads a page")
         view.keyDown(with: key(53, "\u{1b}", [], window))
-        check(cancelled == 1, "Escape closes Text mode too")
+        check(cancelled == 1, "Escape closes the overlay from a text selection too")
+
+        // The Select text shortcut opens the same view with every word already selected.
+        var preselected: [(text: String, search: Bool)] = []
+        var uploads = 0
+        var quiet = OverlayActions()
+        quiet.changed = { _, _ in uploads += 1 }
+        quiet.textChanged = { preselected.append(($1, $2)) }
+        let shortcut = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
+                                   controls: true, selectingAllText: true, actions: quiet)
+        check(spin({ shortcut.hasTextSelection }, 20) && shortcut.selectedText == layout.allText &&
+              preselected.last?.search == false && uploads == 0 && !shortcut.field.isHidden &&
+              shortcut.framedRect == nil && !shortcut.actionChip.isHidden,
+              "the Select text shortcut opens the same view with every word selected, without searching anything")
 
         // The results sheet remembers the width the user drags it to.
         view.panel?.onResize?(700, true)
-        let next = OverlayView(frame: size, image: image, displayIndex: 0, mode: .search, selected: true,
-                               controls: true, actions: OverlayActions())
+        let next = OverlayView(frame: size, image: image, displayIndex: 0, selected: true, controls: true,
+                               actions: OverlayActions())
         check(suite.double(forKey: PanelSizing.defaultsKey) == 700 && next.panelFrame.width == 700,
               "a sheet width set by dragging is remembered for the next activation")
+    }
+
+    // MARK: - Selection frame
+
+    /// The Lens-style frame on plain white and dark screens: the Google gradient border while drawing and after
+    /// release, its dark halo on white, the dimming outside, and its slow turn unless Reduce Motion is on. With a
+    /// folder, writes the previews there.
+    private static func frameChecks(check: (Bool, String) -> Void, gesture: ([CGPoint], OverlayView) -> Void,
+                                    midDrag: (@escaping () -> Void) -> Void, folder: URL?) throws {
+        let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        for (name, shade) in [("white", CGFloat(1)), ("dark", CGFloat(0.1))] {
+            let image = try drawn { size in
+                NSColor(calibratedWhite: shade, alpha: 1).setFill()
+                NSRect(origin: .zero, size: size).fill()
+            }
+            let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            let view = OverlayView(frame: size, image: image, displayIndex: 0, topInset: 32, selected: true,
+                                   controls: true, actions: OverlayActions())
+            window.contentView = view
+            view.layoutSubtreeIfNeeded()
+            var live: (frame: CGRect?, dimmed: Bool, hues: Set<String>)?
+            midDrag {
+                let shot = Self.snapshot(view).flatMap(Bitmap.init)
+                let frame = view.outlineFrame
+                live = (frame, view.isDimmed, frame.flatMap { rect in shot.map { googleHues(along: rect, in: $0) } } ?? [])
+                if let folder, let preview = Self.snapshot(view, scale: 2) {
+                    try? write(preview, to: folder.appendingPathComponent("frame.live.\(name).png"))
+                }
+            }
+            gesture([CGPoint(x: 360, y: 220), CGPoint(x: 600, y: 360), CGPoint(x: 840, y: 470)], view)
+            check(live?.frame.map { $0.width > 400 && $0.height > 200 } == true && live?.dimmed == false &&
+                  (live?.hues.count ?? 0) >= 3,
+                  "on \(name), the gradient frame follows a box while it is dragged, undimmed " +
+                  "(\((live?.hues ?? []).sorted().joined(separator: ", ")))")
+            guard let rect = view.selection, let shot = Self.snapshot(view).flatMap(Bitmap.init) else {
+                check(false, "on \(name), a dragged box becomes a selection that can be rendered")
+                continue
+            }
+            let hues = googleHues(along: rect, in: shot)
+            check(hues.count >= 3 && view.outlineFrame == rect && view.isDimmed,
+                  "on \(name), the released selection has a Google-coloured border, brackets and grips " +
+                  "(\(hues.sorted().joined(separator: ", ")))")
+            let y = Int(rect.midY + 60)
+            let halo = (2...4).map { shot.luma(Int(rect.minX) - $0, y) }.min() ?? 1
+            let page = shot.luma(60, 60)
+            let inside = shot.luma(Int(rect.midX), Int(rect.midY))
+            if name == "white" {
+                check(halo < page - 0.15 && inside > 0.95,
+                      "on white, a dark halo keeps the frame visible (halo \(fmt(halo)), dimmed page \(fmt(page)))")
+            } else {
+                let line = (-1...1).map { shot.luma(Int(rect.minX) + $0, y) }.max() ?? 0
+                check(line > page + 0.25, "on dark, the gradient line stands out (line \(fmt(line)), page \(fmt(page)))")
+            }
+            check(abs(page / inside - (1 - OverlayView.dimAlpha)) < 0.07 || name == "dark",
+                  "on \(name), outside the selection is dimmed by about 35%")
+            if let folder, let preview = Self.snapshot(view, scale: 2) {
+                try write(preview, to: folder.appendingPathComponent("frame.after.\(name).png"))
+            }
+            check(!view.frameLayer.isSpinning, "on \(name), the gradient stands still with Reduce Motion (or animation) off")
+            OverlayView.animates = true
+            view.needsLayout = true
+            view.layoutSubtreeIfNeeded()
+            let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            check(view.frameLayer.isSpinning == !reduce && LensFrameLayer.turn == 6,
+                  "on \(name), the gradient turns once every 6 s unless Reduce Motion is on (Reduce Motion \(reduce))")
+            OverlayView.animates = false
+            view.needsLayout = true
+            view.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// The Google colours found along the straight parts of `rect`'s border in `bitmap`, one pixel per point.
+    private static func googleHues(along rect: CGRect, in bitmap: Bitmap) -> Set<String> {
+        var found = Set<String>()
+        func sample(_ x: CGFloat, _ y: CGFloat, horizontal: Bool) {
+            var best: (saturation: CGFloat, hue: CGFloat)?
+            for offset in -2...2 {
+                let px = Int((horizontal ? x : x + CGFloat(offset)).rounded(.down))
+                let py = Int((horizontal ? y + CGFloat(offset) : y).rounded(.down))
+                let c = bitmap.rgb(px, py)
+                let high = max(c.r, c.g, c.b), low = min(c.r, c.g, c.b)
+                guard high > 0.25, (high - low) / high > (best?.saturation ?? 0.4) else { continue }
+                let spread = high - low
+                var hue = high == c.r ? (c.g - c.b) / spread : high == c.g ? 2 + (c.b - c.r) / spread : 4 + (c.r - c.g) / spread
+                hue = (hue * 60 + 360).truncatingRemainder(dividingBy: 360)
+                best = ((high - low) / high, hue)
+            }
+            switch best?.hue ?? -1 {
+            case 0..<22, 330..<360: found.insert("red")
+            case 35..<70: found.insert("yellow")
+            case 85..<170: found.insert("green")
+            case 195..<250: found.insert("blue")
+            default: break
+            }
+        }
+        let inset = LensFrameLayer.cornerRadius + 2
+        for step in 0...16 {
+            let t = CGFloat(step) / 16
+            let x = rect.minX + inset + (rect.width - 2 * inset) * t
+            let y = rect.minY + inset + (rect.height - 2 * inset) * t
+            sample(x, rect.minY, horizontal: true)
+            sample(x, rect.maxY, horizontal: true)
+            sample(rect.minX, y, horizontal: false)
+            sample(rect.maxX, y, horizontal: false)
+        }
+        return found
     }
 
     // MARK: - Mark

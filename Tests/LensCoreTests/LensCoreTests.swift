@@ -21,12 +21,14 @@ private func XCTAssertFalse(_ condition: Bool, _ message: String = "",
     XCTAssertTrue(!condition, message, file: file, line: line)
 }
 
-private func XCTAssertNil<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) {
-    XCTAssertTrue(value == nil, "Expected nil", file: file, line: line)
+private func XCTAssertNil<T>(_ value: T?, _ message: String = "",
+                             file: StaticString = #filePath, line: UInt = #line) {
+    XCTAssertTrue(value == nil, "Expected nil \(message)", file: file, line: line)
 }
 
-private func XCTAssertNotNil<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) {
-    XCTAssertTrue(value != nil, "Expected non-nil", file: file, line: line)
+private func XCTAssertNotNil<T>(_ value: T?, _ message: String = "",
+                                file: StaticString = #filePath, line: UInt = #line) {
+    XCTAssertTrue(value != nil, "Expected non-nil \(message)", file: file, line: line)
 }
 
 private func XCTAssertThrowsError<T>(_ operation: @autoclosure () throws -> T,
@@ -816,6 +818,335 @@ extension LensCoreTests {
     }
 }
 
+private func gestureLayout() -> TextLayout {
+    TextLayout(lines: [line("alpha beta gamma", 0.1, 0.80, 0.6), line("delta epsilon", 0.1, 0.75, 0.5),
+                       line("zeta", 0.55, 0.30, 0.1)])
+}
+
+/// An ink grid over the whole screenshot with ink in `inked` (unit rects).
+private func inkMap(_ inked: [CGRect], side: Int = 100) -> InkMap {
+    var cells = [Bool](repeating: false, count: side * side)
+    for row in 0..<side {
+        for column in 0..<side {
+            let centre = CGPoint(x: (CGFloat(column) + 0.5) / CGFloat(side), y: (CGFloat(row) + 0.5) / CGFloat(side))
+            cells[row * side + column] = inked.contains { $0.contains(centre) }
+        }
+    }
+    return InkMap(area: SelectionEditor.whole, columns: side, rows: side, cells: cells)
+}
+
+private func letters(_ layout: TextLayout) -> [CGRect] {
+    layout.words.map { $0.box.insetBy(dx: $0.box.width * 0.05, dy: $0.box.height * 0.2) }
+}
+
+/// Four lines of body text with ordinary line spacing.
+private func paragraphLayout() -> TextLayout {
+    TextLayout(lines: [line("Circle to Search lets you", 0.1, 0.60, 0.6, 0.03),
+                       line("select any text on screen", 0.1, 0.55, 0.6, 0.03),
+                       line("and search it in place", 0.1, 0.50, 0.6, 0.03),
+                       line("without switching apps", 0.1, 0.45, 0.45, 0.03)])
+}
+
+/// The unit rect around `words` with room around it, as a loosely drawn circle has.
+private func around(_ layout: TextLayout, _ words: ClosedRange<Int>, dx: CGFloat, dy: CGFloat) -> CGRect {
+    words.map { layout.words[$0].box }.reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -dx, dy: -dy)
+}
+
+extension LensCoreTests {
+    func testGesturePressesOnWordsAndElsewhere() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = gestureLayout()
+        let beta = layout.view(1, in: canvas), centre = CGPoint(x: beta.midX, y: beta.midY)
+        XCTAssertEqual(GestureClassifier.press(at: centre, layout: layout, canvas: canvas), .word(1), "tap on a word")
+        XCTAssertEqual(GestureClassifier.press(at: CGPoint(x: 300, y: 300), layout: layout, canvas: canvas), .visual,
+                       "tap off text")
+        XCTAssertEqual(GestureClassifier.press(at: centre, layout: nil, canvas: canvas), .visual,
+                       "until OCR is ready, presses select visually")
+        XCTAssertEqual(GestureClassifier.press(at: centre, layout: layout, canvas: canvas, clickCount: 2),
+                       .range(TextRange(anchor: 0, focus: 2)), "double click selects the line")
+        XCTAssertEqual(GestureClassifier.press(at: centre, layout: layout, canvas: canvas, clickCount: 3),
+                       .range(TextRange(anchor: 0, focus: 4)), "triple click selects the paragraph")
+        let delta = layout.view(3, in: canvas)
+        XCTAssertEqual(GestureClassifier.press(at: CGPoint(x: delta.midX, y: delta.midY), layout: layout, canvas: canvas,
+                                               shift: true, current: TextRange(anchor: 1, focus: 1)),
+                       .extend(TextRange(anchor: 1, focus: 3)), "shift-click extends")
+        XCTAssertEqual(GestureClassifier.press(at: centre, layout: layout, canvas: canvas, shift: true), .word(1),
+                       "shift-click without a selection selects the word")
+    }
+
+    func testGestureLineDragHighlightsWords() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = gestureLayout()
+        let alpha = layout.view(0, in: canvas), gamma = layout.view(2, in: canvas)
+        XCTAssertEqual(GestureClassifier.lineDrag(from: 0, to: CGPoint(x: gamma.midX, y: gamma.midY + 6),
+                                                  layout: layout, canvas: canvas), TextRange(anchor: 0, focus: 2))
+        XCTAssertEqual(GestureClassifier.lineDrag(from: 0, to: CGPoint(x: 990, y: gamma.midY), layout: layout,
+                                                  canvas: canvas), TextRange(anchor: 0, focus: 2),
+                       "past the end of the line reaches its last word")
+        XCTAssertEqual(GestureClassifier.lineDrag(from: 2, to: CGPoint(x: alpha.minX + 2, y: alpha.midY),
+                                                  layout: layout, canvas: canvas), TextRange(anchor: 2, focus: 0),
+                       "dragging backwards")
+        XCTAssertNil(GestureClassifier.lineDrag(from: 0, to: CGPoint(x: gamma.midX, y: gamma.midY - 120),
+                                                layout: layout, canvas: canvas))
+        XCTAssertNil(GestureClassifier.lineDrag(from: 99, to: .zero, layout: layout, canvas: canvas))
+    }
+
+    func testSnugCircleAroundALineIsNotAHighlight() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = gestureLayout()
+        let alpha = layout.view(0, in: canvas), gamma = layout.view(2, in: canvas)
+        let line = alpha.union(gamma)
+        // A snug circle that starts on the last word and stays within the line's drag band.
+        let loop = (0...32).map { step -> CGPoint in
+            let angle = CGFloat(step) / 32 * 2 * .pi
+            return CGPoint(x: line.midX + cos(angle) * (line.width / 2 + 10),
+                           y: line.midY + sin(angle) * (line.height / 2 + 6))
+        }
+        XCTAssertNotNil(GestureClassifier.lineDrag(from: 2, to: loop[16], layout: layout, canvas: canvas),
+                        "every point of the snug circle stays inside the line's band")
+        XCTAssertTrue(GestureClassifier.encircles(loop, anchor: 2, layout: layout, canvas: canvas))
+        let highlight = stride(from: alpha.minX, through: gamma.maxX, by: 10).map {
+            CGPoint(x: $0, y: line.midY + sin($0 / 15) * line.height * 0.3)
+        }
+        XCTAssertFalse(GestureClassifier.encircles(highlight, anchor: 0, layout: layout, canvas: canvas),
+                       "a wavy highlight along the line")
+        let adjust = [CGPoint(x: alpha.midX, y: line.midY), CGPoint(x: gamma.maxX, y: line.maxY + 4),
+                      CGPoint(x: gamma.minX, y: line.minY - 4)]
+        XCTAssertFalse(GestureClassifier.encircles(adjust, anchor: 0, layout: layout, canvas: canvas),
+                       "dragging back to drop the last word, slightly off the words, still highlights")
+    }
+
+    func testGestureRegionsChooseTextOrVisualSearch() throws {
+        let layout = gestureLayout()
+        let picture = CGRect(x: 0.1, y: 0.1, width: 0.4, height: 0.4)
+        let ink = inkMap(letters(layout) + [picture])
+        let block = CGRect(x: 0.08, y: 0.73, width: 0.64, height: 0.13)
+        XCTAssertEqual(GestureClassifier.region(unit: block, layout: layout, ink: ink, objects: [picture]),
+                       .text(TextRange(anchor: 0, focus: 4)), "circling a text block selects its words")
+        XCTAssertEqual(GestureClassifier.region(unit: block, layout: layout, ink: ink,
+                                                objects: [block.insetBy(dx: 0.01, dy: 0.01)]),
+                       .text(TextRange(anchor: 0, focus: 4)), "a salient text block is still text")
+        XCTAssertEqual(GestureClassifier.region(unit: block, layout: layout, ink: nil, objects: []),
+                       .text(TextRange(anchor: 0, focus: 4)), "without ink, the words decide")
+        XCTAssertEqual(GestureClassifier.region(unit: CGRect(x: 0.05, y: 0.05, width: 0.47, height: 0.47),
+                                                layout: layout, ink: ink, objects: [picture]),
+                       .visual(selectText: false), "circling a picture without words searches it")
+        XCTAssertEqual(GestureClassifier.region(unit: CGRect(x: 0.05, y: 0.05, width: 0.65, height: 0.5),
+                                                layout: layout, ink: ink, objects: [picture]),
+                       .visual(selectText: true), "a picture with a caption is searched and offers Select text")
+        let alpha = layout.words[0].box, beta = layout.words[1].box
+        let cut = CGRect(x: alpha.minX - 0.01, y: 0.78, width: beta.midX - 0.005 - (alpha.minX - 0.01), height: 0.07)
+        XCTAssertEqual(GestureClassifier.region(unit: cut, layout: layout, ink: ink, objects: []),
+                       .text(TextRange(anchor: 0, focus: 0)), "a region cutting through words selects the words inside")
+        XCTAssertEqual(GestureClassifier.region(unit: block, layout: nil, ink: ink, objects: []),
+                       .visual(selectText: false), "until OCR is ready, regions are searched")
+        XCTAssertEqual(GestureClassifier.region(unit: CGRect(x: 0.75, y: 0.05, width: 0.2, height: 0.2), layout: layout,
+                                                ink: ink, objects: []), .visual(selectText: false))
+        let mixed = GestureClassifier.evidence(unit: CGRect(x: 0.05, y: 0.05, width: 0.65, height: 0.5), layout: layout,
+                                               ink: ink, objects: [picture])
+        XCTAssertEqual(mixed.wordsInside, 1)
+        XCTAssertTrue(mixed.dominantObject)
+        XCTAssertTrue((mixed.textInk ?? 1) < 0.1, "\(String(describing: mixed.textInk))")
+
+        // A small photo beside a line of text: the photo holds most of the ink, so it is searched visually.
+        let photo = CGRect(x: 0.45, y: 0.06, width: 0.2, height: 0.2)
+        let both = CGRect(x: 0.05, y: 0.05, width: 0.7, height: 0.85)
+        let page = inkMap(letters(layout) + [photo])
+        let share = GestureClassifier.evidence(unit: both, layout: layout, ink: page, objects: [photo]).textInk ?? 1
+        XCTAssertTrue(share < GestureClassifier.textShare, "the photo holds most of the ink (\(share))")
+        XCTAssertEqual(GestureClassifier.region(unit: both, layout: layout, ink: page, objects: [photo]),
+                       .visual(selectText: true), "a small photo with more ink than the text beside it")
+        XCTAssertEqual(GestureClassifier.region(unit: both, layout: layout, ink: page, objects: []),
+                       .text(TextRange(anchor: 0, focus: 5)), "without a salient object, the words decide")
+        XCTAssertEqual(GestureClassifier.region(unit: block, layout: layout, ink: page,
+                                                objects: [photo, block.insetBy(dx: 0.01, dy: 0.01)]),
+                       .text(TextRange(anchor: 0, focus: 4)), "text circled away from the photo is still text")
+    }
+
+    func testGestureSwitchesBetweenTextAndVisual() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = gestureLayout()
+        let picture = CGRect(x: 0.1, y: 0.1, width: 0.4, height: 0.4)
+        let ink = inkMap(letters(layout) + [picture])
+        func region(_ rect: CGRect) -> GestureClassifier.Region {
+            GestureClassifier.region(unit: rect, layout: layout, ink: ink, objects: [picture])
+        }
+        let zeta = layout.view(5, in: canvas)
+        let steps: [(String, Bool)] = [
+            ("circle text", region(CGRect(x: 0.08, y: 0.73, width: 0.64, height: 0.13)) == .text(TextRange(anchor: 0, focus: 4))),
+            ("circle picture", region(CGRect(x: 0.05, y: 0.05, width: 0.65, height: 0.5)) == .visual(selectText: true)),
+            ("tap caption inside the region", GestureClassifier.press(at: CGPoint(x: zeta.midX, y: zeta.midY),
+                                                                       layout: layout, canvas: canvas) == .word(5)),
+            ("tap the picture", GestureClassifier.press(at: CGPoint(x: 300, y: 300), layout: layout,
+                                                        canvas: canvas) == .visual),
+            ("circle text again", region(CGRect(x: 0.08, y: 0.74, width: 0.55, height: 0.07)) == .text(TextRange(anchor: 3, focus: 4)))
+        ]
+        for (name, passed) in steps { XCTAssertTrue(passed, name) }
+    }
+
+    func testCirclingParagraphSentenceOrLineSelectsText() {
+        let layout = paragraphLayout()
+        XCTAssertEqual(layout.lines.map(\.words), [0..<5, 5..<10, 10..<15, 15..<18])
+        let block = around(layout, 0...17, dx: 0, dy: 0)
+        let cases: [(String, CGRect, LensCore.TextRange)] = [
+            ("paragraph", around(layout, 0...17, dx: 0.04, dy: 0.03), TextRange(anchor: 0, focus: 17)),
+            // A loose circle reaches into the lines above and below without taking in their words.
+            ("sentence", around(layout, 6...8, dx: 0.008, dy: 0.024), TextRange(anchor: 6, focus: 8)),
+            ("single line", around(layout, 10...14, dx: 0.03, dy: 0.024), TextRange(anchor: 10, focus: 14)),
+            ("single word", around(layout, 2...2, dx: 0.01, dy: 0.012), TextRange(anchor: 2, focus: 2))
+        ]
+        let icon = CGRect(x: 0.66, y: 0.455, width: 0.03, height: 0.03)
+        let inks: [(String, InkMap?)] = [("ink", inkMap(letters(layout))), ("no ink map", nil),
+                                         ("an icon beside the text", inkMap(letters(layout) + [icon]))]
+        for (name, region, expected) in cases {
+            for (inkName, ink) in inks {
+                // Vision's saliency often reports a text block as an object; it is still text.
+                for objects in [[], [block.insetBy(dx: -0.01, dy: -0.01)]] {
+                    XCTAssertEqual(GestureClassifier.region(unit: region, layout: layout, ink: ink, objects: objects),
+                                   .text(expected), "\(name), \(inkName), \(objects.count) objects")
+                }
+            }
+        }
+        // Next to a photo that fills most of the circle, visual search wins and offers Select text.
+        let photo = CGRect(x: 0.1, y: 0.1, width: 0.6, height: 0.33)
+        let mixed = around(layout, 15...17, dx: 0.02, dy: 0.02).union(photo)
+        let ink = inkMap(letters(layout) + [photo])
+        XCTAssertEqual(GestureClassifier.region(unit: mixed, layout: layout, ink: ink, objects: [photo]),
+                       .visual(selectText: true), "a photo with its caption")
+        XCTAssertEqual(GestureClassifier.region(unit: mixed, layout: layout, ink: ink, objects: []),
+                       .visual(selectText: true), "a photo Vision doesn't report is still mostly picture")
+    }
+
+    func testHighlightUnderlineAndScribbleStrokesSelectText() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = paragraphLayout()
+        func view(_ index: Int) -> CGRect { layout.view(index, in: canvas) }
+        func stroke(from start: CGFloat, to end: CGFloat, y: (CGFloat) -> CGFloat) -> [CGPoint] {
+            (0...24).map { step in
+                let x = start + (end - start) * CGFloat(step) / 24
+                return CGPoint(x: x, y: y(CGFloat(step)))
+            }
+        }
+        let anyWord = view(6), onWord = view(8)
+        let underline = stroke(from: anyWord.minX + 2, to: onWord.maxX - 2) { _ in anyWord.minY - 5 }
+        XCTAssertEqual(GestureClassifier.lineStroke(underline, layout: layout, canvas: canvas),
+                       TextRange(anchor: 6, focus: 8), "underline")
+        XCTAssertEqual(GestureClassifier.lineStroke(underline.reversed(), layout: layout, canvas: canvas),
+                       TextRange(anchor: 8, focus: 6), "underline drawn right to left")
+        let line = SelectionEditor.view(layout.lines[2].box, in: canvas)
+        XCTAssertEqual(GestureClassifier.lineStroke(stroke(from: line.minX - 30, to: line.maxX + 10) { _ in line.midY },
+                                                    layout: layout, canvas: canvas),
+                       TextRange(anchor: 10, focus: 14), "highlight starting in the margin")
+        let first = SelectionEditor.view(layout.lines[0].box, in: canvas)
+        XCTAssertEqual(GestureClassifier.lineStroke(stroke(from: first.minX, to: first.maxX) { step in
+                           first.midY + (Int(step) % 2 == 0 ? 8 : -8)
+                       }, layout: layout, canvas: canvas), TextRange(anchor: 0, focus: 4), "scribble along a line")
+        XCTAssertEqual(GestureClassifier.lineStroke(stroke(from: first.minX, to: first.maxX) { _ in first.minY - 4 },
+                                                    layout: layout, canvas: canvas),
+                       TextRange(anchor: 0, focus: 4), "an underline between lines belongs to the line above")
+        XCTAssertNil(GestureClassifier.lineStroke(stroke(from: 100, to: 600) { $0 * 20 + 300 }, layout: layout,
+                                                  canvas: canvas))
+        XCTAssertNil(GestureClassifier.lineStroke(stroke(from: 100, to: 600) { _ in 200 }, layout: layout,
+                                                  canvas: canvas))
+        XCTAssertNil(GestureClassifier.lineStroke(stroke(from: 750, to: 950) { _ in line.midY }, layout: layout,
+                                                  canvas: canvas))
+        XCTAssertNil(GestureClassifier.lineStroke([CGPoint(x: 100, y: 100)], layout: layout, canvas: canvas))
+    }
+
+    func testInkMapFromImage() throws {
+        func image(background: NSColor, ink: NSColor) throws -> CGImage {
+            let image = NSImage(size: NSSize(width: 400, height: 200))
+            image.lockFocus()
+            background.setFill()
+            NSRect(x: 0, y: 0, width: 400, height: 200).fill()
+            ink.setFill()
+            NSRect(x: 100, y: 50, width: 100, height: 100).fill()
+            image.unlockFocus()
+            return try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        }
+        for (background, ink) in [(NSColor.white, NSColor.black), (NSColor.black, NSColor.white)] {
+            let picture = try image(background: background, ink: ink)
+            let map = try XCTUnwrap(InkMap(image: picture, area: SelectionEditor.whole))
+            XCTAssertEqual(map.columns, 128)
+            XCTAssertEqual(map.rows, 64)
+            let square = CGRect(x: 0.25, y: 0.25, width: 0.25, height: 0.5)
+            let counts = map.count(in: SelectionEditor.whole, on: [square])
+            let share = CGFloat(counts.ink) / CGFloat(counts.cells)
+            XCTAssertTrue(abs(share - 0.125) < 0.02, "ink share \(share)")
+            XCTAssertTrue(CGFloat(counts.onBoxes) >= 0.95 * CGFloat(counts.ink), "\(counts)")
+            let left = try XCTUnwrap(InkMap(image: picture, area: CGRect(x: 0, y: 0, width: 0.5, height: 1)))
+            XCTAssertTrue(abs(left.area.width - 0.5) < 1e-6 && abs(left.area.height - 1) < 1e-6)
+            let half = left.count(in: left.area, on: [])
+            XCTAssertTrue(abs(CGFloat(half.ink) / CGFloat(half.cells) - 0.25) < 0.03, "\(half)")
+        }
+    }
+
+    func testCirclingRecognizedFixtureText() throws {
+        let image = try OCR.fixture()
+        let layout = TextLayout(lines: try OCR.recognizeWords(image), aspect: CGFloat(image.width) / CGFloat(image.height))
+        let all = try XCTUnwrap(layout.all)
+        let words = layout.words.map(\.box).reduce(CGRect.null) { $0.union($1) }
+        let ink = InkMap(image: image, area: SelectionEditor.whole)
+        let objects = try OCR.salientObjects(image)
+        XCTAssertEqual(GestureClassifier.region(unit: words.insetBy(dx: -0.03, dy: -0.1), layout: layout, ink: ink,
+                                                objects: objects), .text(all), "circling recognized text selects it")
+        XCTAssertEqual(GestureClassifier.region(unit: CGRect(x: 0, y: 0, width: 1, height: 0.2), layout: layout,
+                                                ink: ink, objects: objects), .visual(selectText: false))
+
+        let photo = NSImage(size: NSSize(width: 800, height: 400))
+        photo.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 800, height: 400).fill()
+        for (index, color) in [NSColor.systemOrange, .systemBlue, .systemGreen, .systemPurple].enumerated() {
+            color.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 60 + index * 70, y: 140 + (index % 2) * 60, width: 160, height: 160)).fill()
+        }
+        ("Sunset" as NSString).draw(at: NSPoint(x: 120, y: 60),
+                                    withAttributes: [.font: NSFont.systemFont(ofSize: 40), .foregroundColor: NSColor.black])
+        photo.unlockFocus()
+        let mixed = try XCTUnwrap(photo.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let mixedLayout = TextLayout(lines: try OCR.recognizeWords(mixed), aspect: 2)
+        XCTAssertTrue(mixedLayout.allText.contains("Sunset"), mixedLayout.allText)
+        XCTAssertEqual(GestureClassifier.region(unit: CGRect(x: 0.05, y: 0.1, width: 0.7, height: 0.85),
+                                                layout: mixedLayout,
+                                                ink: InkMap(image: mixed, area: SelectionEditor.whole),
+                                                objects: try OCR.salientObjects(mixed)),
+                       .visual(selectText: true), "a picture with a caption is searched visually")
+    }
+
+    func testCirclingRecognizedParagraphSelectsText() throws {
+        let page = NSImage(size: NSSize(width: 1200, height: 600))
+        page.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 1200, height: 600).fill()
+        let lines = ["Circle anything on your screen to search it", "Select the words you want and copy them",
+                     "Translate a menu or a sign in place", "All of it without leaving the app"]
+        for (index, text) in lines.enumerated() {
+            (text as NSString).draw(at: NSPoint(x: 80, y: 420 - index * 70),
+                                    withAttributes: [.font: NSFont.systemFont(ofSize: 36), .foregroundColor: NSColor.black])
+        }
+        page.unlockFocus()
+        let image = try XCTUnwrap(page.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let layout = TextLayout(lines: try OCR.recognizeWords(image), aspect: 2)
+        XCTAssertEqual(layout.lines.count, 4, layout.allText)
+        let ink = InkMap(image: image, area: SelectionEditor.whole)
+        let objects = try OCR.salientObjects(image)
+        let all = try XCTUnwrap(layout.all)
+        let height = layout.lines[1].box.height
+        XCTAssertEqual(GestureClassifier.region(unit: around(layout, all.lower...all.upper, dx: 0.04, dy: 0.05),
+                                                layout: layout, ink: ink, objects: objects), .text(all), "paragraph")
+        let second = layout.lines[1].words
+        XCTAssertEqual(GestureClassifier.region(unit: around(layout, second.lowerBound...(second.upperBound - 1),
+                                                              dx: 0.03, dy: height * 0.6),
+                                                layout: layout, ink: ink, objects: objects),
+                       .text(TextRange(anchor: second.lowerBound, focus: second.upperBound - 1)), "single line")
+        let sentence = (second.lowerBound + 1)...(second.lowerBound + 3)
+        XCTAssertEqual(GestureClassifier.region(unit: around(layout, sentence, dx: 0.004, dy: height * 0.6),
+                                                layout: layout, ink: ink, objects: objects),
+                       .text(TextRange(anchor: sentence.lowerBound, focus: sentence.upperBound)), "a few words")
+    }
+}
+
 private func XCTUnwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
     guard let value else { throw LensError.message("Unexpected nil at \(file):\(line)") }
     return value
@@ -876,7 +1207,16 @@ let cases: [(String, () throws -> Void)] = [
     ("Text shortcut avoids conflicts", tests.testTextShortcutAvoidsConflicts),
     ("handle tolerance is adjustable", tests.testHandleToleranceIsAdjustable),
     ("support link comes from Info.plist", tests.testSupportLinkComesFromInfoPlist),
-    ("translation is distributed over lines", tests.testTranslationIsDistributedOverLines)
+    ("translation is distributed over lines", tests.testTranslationIsDistributedOverLines),
+    ("gesture: taps, double, triple and shift clicks", tests.testGesturePressesOnWordsAndElsewhere),
+    ("gesture: highlighting along a line", tests.testGestureLineDragHighlightsWords),
+    ("gesture: circled regions choose text or visual search", tests.testGestureRegionsChooseTextOrVisualSearch),
+    ("gesture: switching between text and visual", tests.testGestureSwitchesBetweenTextAndVisual),
+    ("ink map from an image", tests.testInkMapFromImage),
+    ("circling a paragraph, sentence or line selects text", tests.testCirclingParagraphSentenceOrLineSelectsText),
+    ("highlight, underline and scribble strokes select text", tests.testHighlightUnderlineAndScribbleStrokesSelectText),
+    ("circling a recognized paragraph selects text", tests.testCirclingRecognizedParagraphSelectsText),
+    ("circling recognized fixture text", tests.testCirclingRecognizedFixtureText)
 ]
 for (name, test) in cases {
     let before = failures

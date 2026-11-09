@@ -14,7 +14,7 @@ enum OverlayCheck {
         defaults.set(true, forKey: "experimentalUpload")
         defer { defaults.removePersistentDomain(forName: ProcessInfo.processInfo.processName) }
         let controller = AppController()
-        controller.showOverlays([(screen, try OCR.fixture())], mode: .search)
+        controller.showOverlays([(screen, try OCR.fixture())])
         defer { controller.dismiss() }
         guard let view = controller.activeOverlay, let panel = view.panel, let window = view.window else {
             throw LensError.message("The overlay did not open with a results panel.")
@@ -52,19 +52,19 @@ enum OverlayCheck {
         print("PASS Command-A reused the earlier results without another upload")
         print("PANEL_STATUS \(panel.statusLabel.stringValue)")
 
-        // Text mode never uploads, even with visual search allowed and a selection reported to the app.
-        view.setMode(.text)
+        // Selecting text in the same view never uploads, even with visual search allowed and a selection
+        // reported to the app.
         let deadline = Date().addingTimeInterval(20)
         while view.textLayout == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
-        let state = controller.searchState
         let page = panel.webView?.url
         view.selectAllText()
+        let state = controller.searchState
         controller.selectionChanged(view, immediately: true)
         try await Task.sleep(for: .seconds(2))
-        try expect(view.selectedText == "HELLO LENS 123", "Text mode recognized the fixture on this Mac")
+        try expect(view.selectedText == "HELLO LENS 123", "the overlay recognized the fixture on this Mac")
         try expect(controller.searchState == state && panel.webView?.url == page && !view.panelShown,
-                   "a Text-mode selection starts no upload and hides the visual results")
-        print("PASS Text mode selected \"HELLO LENS 123\" locally and uploaded nothing")
+                   "selected text starts no upload and hides the visual results")
+        print("PASS selecting all text chose \"HELLO LENS 123\" locally and uploaded nothing")
     }
 
     private static func results(_ controller: AppController, _ panel: ResultsPanel) async throws -> URL {

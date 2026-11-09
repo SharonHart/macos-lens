@@ -20,7 +20,8 @@ struct TranslationRequest: Equatable {
 struct OverlayActions {
     var began: (OverlayView) -> Void = { _ in }
     var changed: (OverlayView, Bool) -> Void = { _, _ in }
-    var modeChanged: (OverlayView, CaptureMode) -> Void = { _, _ in }
+    /// The text selection settled; `search` asks for a Google search of exactly that text.
+    var textChanged: (OverlayView, String, Bool) -> Void = { _, _, _ in }
     var textCommand: (OverlayView, TextCommand, String) -> Void = { _, _, _ in }
     var quick: (OverlayView, TextQuickAction) -> Void = { _, _ in }
     var translate: (OverlayView, TranslationRequest) -> Void = { _, _ in }
@@ -74,9 +75,9 @@ final class OverlayWindow: NSWindow {
         }
         switch key {
         case "a" where firstResponder is OverlayView:
-            if overlay.mode == .text { overlay.selectAllText() } else { overlay.selectWholeScreen() }
+            overlay.selectWholeScreen()
             return true
-        case "c" where firstResponder is OverlayView && overlay.mode == .text:
+        case "c" where firstResponder is OverlayView && (overlay.hasTextSelection || overlay.translatedLines != nil):
             overlay.copyText()
             return true
         case "w", ".":
@@ -89,7 +90,9 @@ final class OverlayWindow: NSWindow {
 }
 
 /// The full-screen Circle to Search surface for one display: the frozen screenshot drawn 1:1, an edge glow, white
-/// ink for circling, corner brackets for the selection, and (on the active display) the floating controls.
+/// ink for circling, a Google-gradient frame for the selection, and (on the active display) the floating controls.
+/// Text and visual search share it: the screen's words are recognized on this Mac as soon as it opens, so a press on a
+/// word, a highlight along a line or a circle around text selects text, and anything else searches what was chosen.
 final class OverlayView: NSView {
     /// Turned off by the offscreen checks so geometry is final immediately.
     static var animates = true
@@ -98,7 +101,6 @@ final class OverlayView: NSView {
     override var isFlipped: Bool { false }
     let image: CGImage
     let displayIndex: Int
-    private(set) var mode: CaptureMode
     let panel: ResultsPanel?
     let hasControls: Bool
     private let topInset: CGFloat
@@ -115,9 +117,7 @@ final class OverlayView: NSView {
     private let wideGlow = GlowLayer(depth: 120)
     private let thinGlow = GlowLayer(depth: 18)
     private let inkLayer = CAShapeLayer()
-    private let bracketLayer = OutlineLayer(width: 7, haloWidth: 11)
-    private let borderLayer = OutlineLayer(width: 2, haloWidth: 5)
-    private let markLayer = OutlineLayer(width: 5, haloWidth: 9)
+    let frameLayer = LensFrameLayer()
     let textSurface = TextSurface()
     static let dimAlpha: CGFloat = 0.35
 
@@ -125,8 +125,6 @@ final class OverlayView: NSView {
     let bar = FloatingCard(radius: 26)
     let field = NSTextField(string: "")
     let lensButton = NSButton()
-    let modeControl = NSSegmentedControl()
-    let textLabel = NSTextField(labelWithString: "Select text · stays on this Mac")
     let translateCard = FloatingCard(radius: 26)
     let translateButton = NSButton()
     let closeCard = FloatingCard(radius: 18)
@@ -137,7 +135,7 @@ final class OverlayView: NSView {
     let selectTextChip = FloatingCard(radius: 18)
     private(set) var selectTextButton: ChipButton?
 
-    // Text mode. The checks swap these for a private pasteboard, a silent speaker and their own settings.
+    // Text. The checks swap these for a private pasteboard, a silent speaker and their own settings.
     static var defaults = UserDefaults.standard
     static var pasteboard = NSPasteboard.general
     static var speaker: Speaker = SystemSpeaker()
@@ -146,12 +144,14 @@ final class OverlayView: NSView {
     private(set) var textRange: TextRange?
     private(set) var recognizing = false
     private var recognitionWaiters: [() -> Void] = []
-    private enum TextDrag { case select(anchor: Int), handle(fixed: Int, lift: CGFloat), ink }
+    private enum TextDrag { case select(anchor: Int), handle(fixed: Int, lift: CGFloat), line(anchor: Int) }
     private var textDrag: TextDrag?
     private(set) var translatedLines: [String]?
     private(set) var showOriginal = false
     private(set) var translating = false
     private var notice: String?
+    /// The user is waiting for the recognized text (select all, translate), so "Finding text…" is shown.
+    private var textWanted = false
     private var noticeGeneration = 0
 
     // Results sheet.
@@ -175,11 +175,13 @@ final class OverlayView: NSView {
     private var busy = false
     private var tracking: NSTrackingArea?
 
-    init(frame: NSRect, image: CGImage, displayIndex: Int, mode: CaptureMode, topInset: CGFloat = 0,
-         selected: Bool, controls: Bool, actions: OverlayActions) {
+    static let hintText = "Circle or tap to search · highlight text to select it"
+
+    /// `selectingAllText` selects every recognized word once the text is read, as the Select text shortcut does.
+    init(frame: NSRect, image: CGImage, displayIndex: Int, topInset: CGFloat = 0, selected: Bool, controls: Bool,
+         selectingAllText: Bool = false, actions: OverlayActions) {
         self.image = image
         self.displayIndex = displayIndex
-        self.mode = mode
         self.topInset = max(0, topInset)
         self.actions = actions
         hasControls = controls
@@ -194,10 +196,11 @@ final class OverlayView: NSView {
         if controls { buildControls() }
         buildTextControls()
         addSubview(toast)
-        if controls { hint = "Circle, highlight, scribble or tap what you want to search" }
-        if mode == .text { setMode(.text, notify: false) }
+        if controls { hint = Self.hintText }
         updateToast()
         updateStage()
+        // Words are found on this Mac straight away, so presses can tell text from pictures; nothing is uploaded.
+        if selectingAllText { selectAllText() } else { ensureRecognized {} }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -230,10 +233,8 @@ final class OverlayView: NSView {
         inkLayer.shadowRadius = 8
         inkLayer.shadowOffset = .zero
         root.addSublayer(inkLayer)
-        root.addSublayer(borderLayer)
-        root.addSublayer(markLayer)
-        root.addSublayer(bracketLayer)
-        for layer in root.sublayers ?? [] { layer.actions = Self.noActions }
+        root.addSublayer(frameLayer)
+        for layer in root.sublayers ?? [] where layer !== frameLayer { layer.actions = Self.noActions }
         wideGlow.opacity = 0
         thinGlow.opacity = 0.8
     }
@@ -269,27 +270,6 @@ final class OverlayView: NSView {
         imageButton(lensButton, LensMark.image(size: 28), tint: googleBlue, label: "Search the selection now (Return)",
                     action: #selector(lensPressed))
         lensButton.imageScaling = .scaleNone
-        modeControl.segmentCount = 2
-        modeControl.trackingMode = .selectOne
-        modeControl.segmentStyle = .capsule
-        for (index, (label, symbol, tip)) in [("Search", "magnifyingglass", "Search what you circle with Google Lens"),
-                                              ("Text", "text.viewfinder", "Select text on the screen, on this Mac")]
-            .enumerated() {
-            modeControl.setLabel(label, forSegment: index)
-            modeControl.setImage(NSImage(systemSymbolName: symbol, accessibilityDescription: label)?
-                .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold)), forSegment: index)
-            modeControl.setImageScaling(.scaleProportionallyDown, forSegment: index)
-            modeControl.setWidth(78, forSegment: index)
-            modeControl.setToolTip(tip, forSegment: index)
-        }
-        modeControl.selectedSegment = mode == .text ? 1 : 0
-        modeControl.target = self
-        modeControl.action = #selector(modeControlChanged)
-        modeControl.setAccessibilityLabel("Search or select text")
-        textLabel.font = .systemFont(ofSize: 14)
-        textLabel.textColor = .secondaryLabelColor
-        textLabel.lineBreakMode = .byTruncatingTail
-        textLabel.isHidden = true
         field.placeholderString = "Add to your search"
         field.isBordered = false
         field.drawsBackground = false
@@ -302,7 +282,7 @@ final class OverlayView: NSView {
         field.target = self
         field.action = #selector(fieldSubmitted)
         field.setAccessibilityLabel("Add to your search")
-        for view in [lensButton, field, textLabel, modeControl] { bar.content.addSubview(view) }
+        for view in [lensButton, field] { bar.content.addSubview(view) }
         addSubview(bar)
 
         symbolButton(translateButton, "translate", fallback: "character.bubble", size: 19,
@@ -326,7 +306,7 @@ final class OverlayView: NSView {
         }
     }
 
-    /// Text mode works on every display, so its menus are built even where the search bar is not.
+    /// Text works on every display, so its menus are built even where the search bar is not.
     private func buildTextControls() {
         translateBar.isHidden = true
         translateBar.onChange = { [weak self] in
@@ -416,8 +396,11 @@ final class OverlayView: NSView {
     }
 
     var isDimmed: Bool { !dimLayer.isHidden }
-    /// The continuous border currently drawn around the selection or the area being drawn, if any.
-    var outlineFrame: CGRect? { borderLayer.isHidden ? nil : borderLayer.path?.boundingBoxOfPath }
+    /// The continuous gradient border currently drawn around the selection or the area being drawn, if any.
+    var outlineFrame: CGRect? { frameLayer.isFull ? frameLayer.rect : nil }
+    /// The corner brackets currently drawn, if any.
+    var framedRect: CGRect? { frameLayer.rect }
+    var hasTextSelection: Bool { textRange != nil }
     /// The glowing ink stroke currently drawn, if any.
     var inkBounds: CGRect? { inkLayer.path.flatMap { $0.isEmpty ? nil : $0.boundingBoxOfPath } }
     var toastText: String { toast.label.stringValue }
@@ -431,9 +414,7 @@ final class OverlayView: NSView {
             bar.frame = barFrame
             let size = barFrame.size
             lensButton.frame = NSRect(x: 8, y: (size.height - 40) / 2, width: 40, height: 40)
-            modeControl.frame = NSRect(x: size.width - 172, y: (size.height - 28) / 2, width: 162, height: 28)
-            field.frame = NSRect(x: 56, y: (size.height - 22) / 2, width: size.width - 56 - 184, height: 22)
-            textLabel.frame = field.frame
+            field.frame = NSRect(x: 56, y: (size.height - 22) / 2, width: size.width - 56 - 16, height: 22)
             translateCard.frame = translateFrame
             translateButton.frame = translateCard.bounds
             closeCard.frame = closeFrame
@@ -461,9 +442,11 @@ final class OverlayView: NSView {
         stage.frame = bounds
         screenshotLayer.frame = canvas
         let full = CGPath(rect: bounds, transform: nil)
-        let searching = mode == .search
-        for layer in [bracketLayer, borderLayer, markLayer] { layer.frame = bounds }
-        if searching, let selection, !isWhole, drag != .draw {
+        // A text selection shows its own highlight instead of the frame.
+        let visual = textRange == nil
+        frameLayer.frame = bounds
+        frameLayer.spins = !reduceMotion
+        if visual, let selection, !isWhole, drag != .draw {
             let path = CGMutablePath()
             path.addPath(full)
             path.addPath(Self.roundedPath(selection))
@@ -472,70 +455,20 @@ final class OverlayView: NSView {
         } else {
             dimLayer.isHidden = true
         }
-        if searching, let frame = bracketFrame, drag != .draw {
-            bracketLayer.path = Self.bracketPath(frame)
-            bracketLayer.isHidden = false
+        // The frame follows a new area live while it is drawn, so the selection shows on any background.
+        if visual, drag == .draw, points.count > 1 {
+            frameLayer.show(SelectionEditor.strokeBounds(points, in: bounds), full: true)
+        } else if visual, drag != .draw, let frame = bracketFrame {
+            frameLayer.show(frame, full: !isWhole)
         } else {
-            bracketLayer.isHidden = true
-        }
-        // A thin continuous border, live while a new area is drawn, so the selection shows on any background.
-        if searching, drag == .draw, points.count > 1 {
-            borderLayer.path = Self.roundedPath(SelectionEditor.strokeBounds(points, in: bounds))
-            borderLayer.isHidden = false
-        } else if searching, let selection, !isWhole {
-            borderLayer.path = Self.roundedPath(selection)
-            borderLayer.isHidden = false
-        } else {
-            borderLayer.isHidden = true
-        }
-        if searching, let selection, !isWhole, drag != .draw {
-            markLayer.path = Self.markPath(selection)
-            markLayer.isHidden = false
-        } else {
-            markLayer.isHidden = true
+            frameLayer.hide()
         }
         updateTextSurface()
         CATransaction.commit()
     }
 
-    static func bracketMetrics(_ rect: CGRect) -> (arm: CGFloat, radius: CGFloat) {
-        let arm = min(48, max(8, min(rect.width, rect.height) * 0.35))
-        return (arm, min(16, arm * 0.5))
-    }
-
-    /// Short grab marks at the middle of each edge, where the edge handles are.
-    static func markPath(_ rect: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        let across = min(28, rect.width * 0.18), up = min(28, rect.height * 0.18)
-        for y in [rect.minY, rect.maxY] {
-            path.move(to: CGPoint(x: rect.midX - across / 2, y: y))
-            path.addLine(to: CGPoint(x: rect.midX + across / 2, y: y))
-        }
-        for x in [rect.minX, rect.maxX] {
-            path.move(to: CGPoint(x: x, y: rect.midY - up / 2))
-            path.addLine(to: CGPoint(x: x, y: rect.midY + up / 2))
-        }
-        return path
-    }
-
-    /// Four rounded corner brackets with a fixed element count so the path can animate between selections.
-    static func bracketPath(_ rect: CGRect) -> CGPath {
-        let (arm, radius) = bracketMetrics(rect)
-        let path = CGMutablePath()
-        for (x, y, dx, dy) in [(rect.minX, rect.maxY, 1.0, -1.0), (rect.maxX, rect.maxY, -1.0, -1.0),
-                               (rect.maxX, rect.minY, -1.0, 1.0), (rect.minX, rect.minY, 1.0, 1.0)] {
-            path.move(to: CGPoint(x: x, y: y + dy * arm))
-            path.addLine(to: CGPoint(x: x, y: y + dy * radius))
-            path.addQuadCurve(to: CGPoint(x: x + dx * radius, y: y), control: CGPoint(x: x, y: y))
-            path.addLine(to: CGPoint(x: x + dx * arm, y: y))
-        }
-        return path
-    }
-
-    static func roundedPath(_ rect: CGRect) -> CGPath {
-        let radius = min(bracketMetrics(rect).radius, rect.width / 2, rect.height / 2)
-        return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-    }
+    static func bracketPath(_ rect: CGRect) -> CGPath { LensFrameLayer.bracketPath(rect) }
+    static func roundedPath(_ rect: CGRect) -> CGPath { LensFrameLayer.roundedPath(rect) }
 
     private static func inkPath(_ points: [CGPoint]) -> CGPath {
         let path = CGMutablePath()
@@ -572,51 +505,27 @@ final class OverlayView: NSView {
         thinGlow.add(thin, forKey: "intro")
         wideGlow.spin(duration: 1.6)
         thinGlow.spin(duration: 1.6)
-        if let frame = bracketFrame {
-            let grow = CABasicAnimation(keyPath: "path")
-            grow.fromValue = Self.bracketPath(frame.insetBy(dx: 26, dy: 26))
-            grow.duration = 0.45
-            grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            bracketLayer.animatePath(grow, forKey: "intro")
+        if let frame = bracketFrame, frameLayer.rect != nil {
+            frameLayer.animateBrackets(from: frame.insetBy(dx: 26, dy: 26), duration: 0.45)
         }
     }
 
-    /// Ink fades and the selection appears as brackets, like Android's circle morphing into the selected area.
+    /// Ink fades and the selection appears framed, like Android's circle morphing into the selected area.
     private func morph(from rect: CGRect) {
         updateStage()
-        guard !reduceMotion, let frame = bracketFrame else {
-            inkLayer.path = nil
-            return
-        }
-        let fade = CABasicAnimation(keyPath: "opacity")
-        fade.fromValue = 1
-        fade.toValue = 0
-        fade.duration = 0.3
+        fadeInk()
+        guard !reduceMotion, bracketFrame != nil else { return }
         CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            guard let self, self.drag == nil else { return }
-            self.inkLayer.path = nil
-        }
-        inkLayer.opacity = 0
-        inkLayer.add(fade, forKey: "fade")
-        let grow = CABasicAnimation(keyPath: "path")
-        grow.fromValue = Self.bracketPath(rect.insetBy(dx: -14, dy: -14))
-        grow.toValue = Self.bracketPath(frame)
-        grow.duration = 0.22
-        grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        bracketLayer.animatePath(grow, forKey: "morph")
+        if frameLayer.rect != nil { frameLayer.animateBrackets(from: rect.insetBy(dx: -14, dy: -14), duration: 0.22) }
         let appear = CABasicAnimation(keyPath: "opacity")
         appear.fromValue = 0
         appear.toValue = 1
         appear.duration = 0.18
-        bracketLayer.add(appear, forKey: "appear")
         dimLayer.add(appear, forKey: "appear")
-        borderLayer.add(appear, forKey: "appear")
-        markLayer.add(appear, forKey: "appear")
         CATransaction.commit()
     }
 
-    /// Brackets breathe while the selection is being uploaded.
+    /// The frame breathes while the selection is being uploaded.
     func setBusy(_ busy: Bool) {
         guard busy != self.busy else { return }
         self.busy = busy
@@ -627,9 +536,9 @@ final class OverlayView: NSView {
             pulse.duration = 0.6
             pulse.autoreverses = true
             pulse.repeatCount = .infinity
-            bracketLayer.add(pulse, forKey: "pulse")
+            frameLayer.add(pulse, forKey: "pulse")
         } else {
-            bracketLayer.removeAnimation(forKey: "pulse")
+            frameLayer.removeAnimation(forKey: "pulse")
         }
     }
 
@@ -788,7 +697,7 @@ final class OverlayView: NSView {
     }
 
     private func updateToast() {
-        let working = mode != .text ? nil : recognizing ? "Finding text…" : translating ? "Translating…" : nil
+        let working = recognizing && textWanted ? "Finding text…" : translating ? "Translating…" : nil
         let text = warning ?? notice ?? working ?? activity ?? hint
         toast.set(text, warning: warning != nil,
                   busy: warning == nil && notice == nil && (working != nil || activity != nil))
@@ -799,6 +708,8 @@ final class OverlayView: NSView {
     // MARK: Commands
 
     func clearSelection() {
+        clearTextSelection()
+        hideSelectTextChip()
         guard area != .none else { return }
         area = .none
         updateStage()
@@ -806,6 +717,7 @@ final class OverlayView: NSView {
 
     /// Selects everything on this screen again (Command-A), resetting zoom.
     @objc func selectWholeScreen() {
+        clearTextSelection()
         hideSelectTextChip()
         actions.began(self)
         viewport.reset()
@@ -815,6 +727,7 @@ final class OverlayView: NSView {
         updateToast()
         updateStage()
         actions.changed(self, false)
+        updateSelectTextChip()
     }
 
     @objc func searchNow() {
@@ -823,17 +736,22 @@ final class OverlayView: NSView {
         actions.changed(self, true)
     }
 
-    @objc private func lensPressed() { mode == .text ? searchSelectedText() : searchNow() }
+    @objc private func lensPressed() { textRange != nil ? searchSelectedText() : searchNow() }
     /// Translate draws the translation over the recognized text in place, like Lens.
     @objc func translate() { beginTranslation() }
-    @objc private func modeControlChanged() { setMode(modeControl.selectedSegment == 1 ? .text : .search) }
     @objc func cancelOverlay() { actions.cancel() }
 
-    /// Return in the search bar refines the visual search with the typed words (multisearch).
+    /// Return in the search bar refines the visual search with the typed words (multisearch), or searches the
+    /// selected text together with them.
     @objc func fieldSubmitted() {
         hint = nil
         updateToast()
         window?.makeFirstResponder(self)
+        if textRange != nil {
+            let text = [selectedText, refinement].filter { !$0.isEmpty }.joined(separator: " ")
+            if !text.isEmpty { actions.textCommand(self, .search, text) }
+            return
+        }
         actions.refine(self, refinement)
     }
 
@@ -855,13 +773,13 @@ final class OverlayView: NSView {
         layoutChip()
         if !selectTextChip.isHidden { updateSelectTextChip() }
         // The default selection follows what is visible, so a zoomed screen is searched once the gesture pauses.
-        guard isWhole, mode == .search else { return }
+        guard isWhole, textRange == nil else { return }
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(visibleAreaSettled), object: nil)
         perform(#selector(visibleAreaSettled), with: nil, afterDelay: 0.35)
     }
 
     @objc private func visibleAreaSettled() {
-        guard isWhole, mode == .search else { return }
+        guard isWhole, textRange == nil else { return }
         actions.changed(self, false)
     }
 
@@ -920,14 +838,36 @@ final class OverlayView: NSView {
         return SelectionEditor.target(at: point, selection: grab.selection, bounds: grab.limit, tolerance: 18)
     }
 
-    private func updateCursor(at point: CGPoint) {
+    func updateCursor(at point: CGPoint) {
         guard drag == nil, textDrag == nil else { return }
         if let hit = hitTest(convert(point, to: superview)), hit !== self { return }
-        if mode == .text {
-            textCursor(at: point).set()
-            return
+        cursor(at: point).set()
+    }
+
+    /// An I-beam over recognized words, an open hand over text handles, otherwise the area's crosshair or grip.
+    func cursor(at point: CGPoint) -> NSCursor {
+        switch pressTarget(at: point) {
+        case .handle: return .openHand
+        case .text: return .iBeam
+        case .region(let target): return cursor(for: target)
         }
-        cursor(for: target(at: point)).set()
+    }
+
+    /// What a press does, in this order: drag a text handle, resize a partial selection at its edges, select the word
+    /// under it, or draw, move or resize the area.
+    private enum PressTarget {
+        case handle(fixed: Int, lift: CGFloat)
+        case text(GestureClassifier.Press)
+        case region(SelectionDrag)
+    }
+
+    private func pressTarget(at point: CGPoint, clickCount: Int = 1, shift: Bool = false) -> PressTarget {
+        if textRange != nil, let handle = handleHit(at: point) { return .handle(fixed: handle.fixed, lift: handle.lift) }
+        let region = textRange == nil ? target(at: point) : .draw
+        if case .resize = region, !isWhole { return .region(region) }
+        let press = GestureClassifier.press(at: point, layout: textLayout, canvas: canvas, clickCount: clickCount,
+                                            shift: shift, current: textRange)
+        return press == .visual ? .region(region) : .text(press)
     }
 
     private func cursor(for target: SelectionDrag) -> NSCursor {
@@ -954,19 +894,51 @@ final class OverlayView: NSView {
         window?.makeKey()
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
-        if mode == .text {
-            textMouseDown(event, at: point)
-            return
-        }
         hideSelectTextChip()
-        let target = target(at: point)
-        drag = target
-        startArea = area
-        dragStart = point
-        dragStartRect = isWhole ? bounds : selection ?? .null
         warning = nil
         hint = nil
         tapGeneration += 1
+        stopSpeaking()
+        startArea = area
+        actions.began(self)
+        switch pressTarget(at: point, clickCount: event.clickCount, shift: event.modifierFlags.contains(.shift)) {
+        case .handle(let fixed, let lift):
+            textDrag = .handle(fixed: fixed, lift: lift)
+            NSCursor.closedHand.set()
+            textChanged(dragging: true)
+        case .text(let press):
+            beginText(press, at: point)
+        case .region(let target):
+            beginRegion(target, at: point)
+        }
+    }
+
+    /// A press on a word selects it and may go on to highlight along its line; double and triple clicks select the
+    /// line and the paragraph, and Shift-click extends the selection.
+    private func beginText(_ press: GestureClassifier.Press, at point: CGPoint) {
+        switch press {
+        case .word(let index):
+            textRange = TextRange(anchor: index, focus: index)
+            textDrag = .line(anchor: index)
+            points = [clamp(point, to: bounds)]
+        case .range(let range):
+            textRange = range
+            textDrag = nil
+        case .extend(let range):
+            textRange = range
+            textDrag = .select(anchor: range.anchor)
+        case .visual:
+            return
+        }
+        textChanged(dragging: textDrag != nil)
+    }
+
+    /// A press off text leaves text selection and draws, moves or resizes the area to search.
+    private func beginRegion(_ target: SelectionDrag, at point: CGPoint) {
+        clearTextSelection()
+        drag = target
+        dragStart = point
+        dragStartRect = isWhole ? bounds : selection ?? .null
         updateToast()
         if target == .move { NSCursor.closedHand.set() }
         if target == .draw {
@@ -975,15 +947,14 @@ final class OverlayView: NSView {
             inkLayer.opacity = 1
             inkLayer.path = Self.inkPath(points)
         }
-        actions.began(self)
         setDragging(true)
         updateStage()
     }
 
     override func mouseDragged(with event: NSEvent) {
         let raw = convert(event.locationInWindow, from: nil)
-        if mode == .text {
-            textMouseDragged(raw)
+        if let textDrag {
+            dragText(textDrag, to: raw)
             return
         }
         guard let drag else { return }
@@ -1003,6 +974,44 @@ final class OverlayView: NSView {
         }
     }
 
+    private func dragText(_ textDrag: TextDrag, to point: CGPoint) {
+        guard let layout = textLayout else { return }
+        switch textDrag {
+        case .select(let anchor):
+            if let index = layout.nearestIndex(to: point, canvas: canvas) {
+                textRange = TextRange(anchor: anchor, focus: index)
+            }
+        case .handle(let fixed, let lift):
+            if let index = layout.nearestIndex(to: CGPoint(x: point.x, y: point.y + lift), canvas: canvas) {
+                textRange = TextRange(anchor: fixed, focus: index)
+            }
+        case .line(let anchor):
+            points.append(clamp(point, to: bounds))
+            guard let range = GestureClassifier.lineDrag(from: anchor, to: point, layout: layout, canvas: canvas),
+                  !GestureClassifier.encircles(points, anchor: anchor, layout: layout, canvas: canvas) else {
+                becomeInk()
+                return
+            }
+            textRange = range
+        }
+        textChanged(dragging: true)
+    }
+
+    /// A press that began on a word and left its line is circling instead: the stroke so far becomes ink.
+    private func becomeInk() {
+        let stroke = points
+        clearTextSelection()
+        points = stroke
+        drag = .draw
+        dragStart = stroke.first ?? .zero
+        dragStartRect = isWhole ? bounds : selection ?? .null
+        inkLayer.removeAllAnimations()
+        inkLayer.opacity = 1
+        inkLayer.path = Self.inkPath(points)
+        setDragging(true)
+        updateStage()
+    }
+
     private func setRect(_ rect: CGRect) {
         guard !rect.isNull, rect.width > 0, rect.height > 0 else { return }
         area = .unit(SelectionEditor.unit(rect, in: canvas))
@@ -1010,40 +1019,125 @@ final class OverlayView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if mode == .text {
-            textMouseUp(convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        if let textDrag {
+            dragText(textDrag, to: point)
+            if self.textDrag != nil {
+                self.textDrag = nil
+                points.removeAll()
+                updateCursor(at: point)
+                textSettled()
+                return
+            }
+        } else if drag == nil {
+            // A double or triple click selected a line or paragraph.
+            if textRange != nil { textSettled() }
             return
         }
         guard let finished = drag else { return }
-        if finished != .draw { mouseDragged(with: event) }
-        else { points.append(clamp(convert(event.locationInWindow, from: nil), to: bounds)) }
+        if finished != .draw { mouseDragged(with: event) } else { points.append(clamp(point, to: bounds)) }
         drag = nil
         setDragging(false)
-        defer { updateCursor(at: convert(event.locationInWindow, from: nil)) }
-        if finished == .draw {
-            let stroke = points
-            points.removeAll()
-            if SelectionEditor.isTap(stroke) {
-                selectTapped(at: stroke[0])
-                return
-            }
-            let rect = SelectionEditor.strokeBounds(stroke, in: bounds)
-            guard Selection.isUsable(rect) else {
-                area = startArea
-                inkLayer.path = nil
-                updateStage()
-                return
-            }
-            area = .unit(SelectionEditor.unit(rect, in: canvas))
-            morph(from: rect)
-        } else if !Selection.isUsable(selection) {
-            area = startArea
+        defer { updateCursor(at: point) }
+        guard finished == .draw else {
+            if !Selection.isUsable(selection) { area = startArea }
+            normalizeWhole()
+            updateStage()
+            keepSelectionVisible()
+            if area != startArea { actions.changed(self, false) }
+            updateSelectTextChip()
+            return
         }
+        let stroke = points
+        points.removeAll()
+        if SelectionEditor.isTap(stroke) {
+            selectTapped(at: stroke[0])
+            return
+        }
+        // A highlight or underline along a line of text selects its words, as Lens does.
+        if let layout = textLayout, let range = GestureClassifier.lineStroke(stroke, layout: layout, canvas: canvas) {
+            area = startArea
+            textRange = range
+            fadeInk()
+            updateStage()
+            textSettled()
+            return
+        }
+        let rect = SelectionEditor.strokeBounds(stroke, in: bounds)
+        guard Selection.isUsable(rect) else {
+            area = startArea
+            inkLayer.path = nil
+            updateStage()
+            return
+        }
+        area = .unit(SelectionEditor.unit(rect, in: canvas))
+        morph(from: rect)
         normalizeWhole()
         updateStage()
         keepSelectionVisible()
-        if area != startArea || finished == .draw { actions.changed(self, false) }
-        updateSelectTextChip()
+        classifyRegion()
+    }
+
+    /// Whether a circled, scribbled or dragged area is text or a picture, decided on this Mac from the recognized words,
+    /// the area's ink and Vision's salient objects: text is selected and searched as text, anything else is searched
+    /// visually, offering "Select text" when it contains words. Until the screen's text is read, areas are visual.
+    private func classifyRegion() {
+        guard let unit, !isWhole, let selection, let layout = textLayout, !layout.isEmpty,
+              layout.range(inside: selection, canvas: canvas) != nil else {
+            actions.changed(self, false)
+            updateSelectTextChip()
+            return
+        }
+        let generation = tapGeneration
+        let image = self.image
+        let finish: (GestureClassifier.Region) -> Void = { [weak self] verdict in
+            self?.applyRegion(verdict, generation: generation, unit: unit)
+        }
+        Task.detached(priority: .userInitiated) {
+            let ink = InkMap(image: image, area: unit)
+            var objects: [CGRect] = []
+            if let pixels = SelectionEditor.pixels(forUnit: unit, width: image.width, height: image.height),
+               let crop = image.cropping(to: pixels) {
+                objects = ((try? OCR.salientObjects(crop)) ?? []).map {
+                    SelectionEditor.unit(forNormalized: $0, inPixels: pixels, width: image.width, height: image.height)
+                }
+            }
+            let verdict = GestureClassifier.region(unit: unit, layout: layout, ink: ink, objects: objects)
+            await MainActor.run { finish(verdict) }
+        }
+    }
+
+    private func applyRegion(_ verdict: GestureClassifier.Region, generation: Int, unit: CGRect) {
+        guard generation == tapGeneration, drag == nil, textDrag == nil, textRange == nil, self.unit == unit else { return }
+        switch verdict {
+        case .text(let range):
+            textRange = range
+            updateStage()
+            textSettled()
+        case .visual:
+            actions.changed(self, false)
+            updateSelectTextChip()
+        }
+    }
+
+    /// The ink fades out where it was drawn.
+    private func fadeInk() {
+        guard !reduceMotion else {
+            inkLayer.path = nil
+            return
+        }
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.duration = 0.3
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self, self.drag == nil else { return }
+            self.inkLayer.path = nil
+        }
+        inkLayer.opacity = 0
+        inkLayer.add(fade, forKey: "fade")
+        CATransaction.commit()
     }
 
     /// A selection dragged back out to the screen edges becomes the default whole-screen selection again.
@@ -1093,13 +1187,9 @@ final class OverlayView: NSView {
     // MARK: Keyboard
 
     override func keyDown(with event: NSEvent) {
-        if mode == .text {
-            if event.keyCode == 53 { actions.cancel() } else { super.keyDown(with: event) }
-            return
-        }
         switch event.keyCode {
         case 53: actions.cancel()
-        case 36, 76: searchNow()
+        case 36, 76: lensPressed()
         default:
             // Typing anywhere goes to the search bar, as on Android.
             let flags = event.modifierFlags.intersection([.command, .control, .option])
@@ -1297,57 +1387,13 @@ final class Toast: FloatingCard {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-// MARK: - Text mode
+// MARK: - Text
 
-/// Selecting text on the frozen screen, as Lens's Text option does: every word recognized with Apple Vision on this
-/// Mac, selected by clicking or dragging like a text cursor, with Android-style handles and a floating action menu.
-/// The screenshot never leaves this Mac in Text mode; only text the user chooses to search or translate is sent.
+/// Selecting text on the frozen screen in the same view as visual search, as Lens does: every word is recognized with
+/// Apple Vision on this Mac when the overlay opens, then selected by clicking, highlighting or circling it, with
+/// Android-style handles and a floating action menu. Recognition never uploads anything; only text the user selects
+/// is searched (when visual search is allowed) or sent for translation.
 extension OverlayView {
-    static let textHint = "Click a word or drag across text · on this Mac"
-
-    /// Switches between visual search and selecting text, keeping the same screenshot and zoom.
-    func setMode(_ newMode: CaptureMode, range: TextRange? = nil, notify: Bool = true) {
-        let changed = newMode != mode
-        mode = newMode
-        drag = nil
-        textDrag = nil
-        points.removeAll()
-        inkLayer.path = nil
-        hideSelectTextChip()
-        if hasControls {
-            modeControl.selectedSegment = newMode == .text ? 1 : 0
-            field.isHidden = newMode == .text
-            textLabel.isHidden = newMode != .text
-            lensButton.toolTip = newMode == .text ? "Search the selected text with Google" :
-                "Search the selection now (Return)"
-            if newMode == .text, window?.firstResponder === field.currentEditor() { window?.makeFirstResponder(self) }
-        }
-        warning = nil
-        if newMode == .text {
-            activity = nil
-            textRange = range
-            hint = nil
-            ensureRecognized { [weak self] in
-                guard let self, self.mode == .text else { return }
-                if let range, self.textRange == nil { self.textRange = range }
-                self.textChanged(dragging: false)
-            }
-        } else {
-            stopSpeaking()
-            if translatedLines != nil || translating { endTranslation() }
-            textRange = nil
-            notice = nil
-            if hasControls && isWhole { hint = "Circle, highlight, scribble or tap what you want to search" }
-            actionChip.isHidden = true
-        }
-        if newMode == .text, window?.firstResponder !== self { window?.makeFirstResponder(self) }
-        if changed && notify { actions.modeChanged(self, newMode) }
-        updateTextLabel()
-        updateToast()
-        updateStage()
-        needsLayout = true
-    }
-
     /// Recognizes the whole frozen display once, off the main thread; later callers wait for the same result.
     func ensureRecognized(_ then: @escaping () -> Void) {
         if textLayout != nil {
@@ -1378,17 +1424,19 @@ extension OverlayView {
             textLayout = TextLayout(lines: lines, aspect: aspect)
         case .failure(let error):
             textLayout = .empty
-            if mode == .text { warning = "Couldn't read text on this screen: \(error.localizedDescription)" }
+            if textWanted { warning = "Couldn't read text on this screen: \(error.localizedDescription)" }
         }
         let waiters = recognitionWaiters
         recognitionWaiters.removeAll()
         waiters.forEach { $0() }
-        if mode == .text, warning == nil, textRange == nil, hasControls {
-            hint = textLayout?.isEmpty == false ? Self.textHint : nil
-            if textLayout?.isEmpty != false { warning = "No text found on this screen" }
-        }
+        textWanted = false
         updateToast()
         updateStage()
+        shimmerWords()
+        updateSelectTextChip()
+        if let window, window.isKeyWindow {
+            updateCursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
     }
 
     // MARK: Drawing
@@ -1396,36 +1444,11 @@ extension OverlayView {
     func updateTextSurface() {
         let surface = textSurface
         surface.frame = bounds
-        surface.isHidden = mode != .text
-        guard mode == .text else {
-            surface.dim.removeAnimation(forKey: "shimmer")
-            return
-        }
         let canvas = self.canvas
         let layout = textLayout ?? .empty
         let translated = translatedLines != nil && !showOriginal
         surface.translation.frame = canvas
         surface.translation.isHidden = !translated || surface.translation.contents == nil
-        let dim = CGMutablePath()
-        dim.addRect(bounds)
-        let lineBoxes = layout.lines.map { SelectionEditor.view($0.box, in: canvas).insetBy(dx: -2, dy: -2) }
-        for rect in Self.merged(lineBoxes) {
-            dim.addPath(CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil))
-        }
-        surface.dim.path = dim
-        if recognizing && !reduceMotion {
-            if surface.dim.animation(forKey: "shimmer") == nil {
-                let shimmer = CABasicAnimation(keyPath: "opacity")
-                shimmer.fromValue = 1
-                shimmer.toValue = 0.4
-                shimmer.duration = 0.7
-                shimmer.autoreverses = true
-                shimmer.repeatCount = .infinity
-                surface.dim.add(shimmer, forKey: "shimmer")
-            }
-        } else {
-            surface.dim.removeAnimation(forKey: "shimmer")
-        }
         let words = CGMutablePath()
         if !translated {
             for index in layout.words.indices {
@@ -1450,6 +1473,17 @@ extension OverlayView {
         surface.handles.path = handles
     }
 
+    /// The found words light up once and fade, so it's clear the screen's text can be selected; they are not marked
+    /// permanently.
+    private func shimmerWords() {
+        guard !reduceMotion, textLayout?.isEmpty == false else { return }
+        let shimmer = CAKeyframeAnimation(keyPath: "opacity")
+        shimmer.values = [0, 0.9, 0]
+        shimmer.keyTimes = [0, 0.35, 1]
+        shimmer.duration = 0.9
+        textSurface.words.add(shimmer, forKey: "shimmer")
+    }
+
     /// Highlight rectangles merged per line; whole lines when the translation covers the original words.
     private func selectionRects(_ range: TextRange, layout: TextLayout) -> [CGRect] {
         guard translatedLines != nil && !showOriginal else { return layout.lineRects(for: range, canvas: canvas) }
@@ -1466,19 +1500,6 @@ extension OverlayView {
             lines.append(layout.words[index].line)
         }
         return lines
-    }
-
-    /// Overlapping rectangles joined, so the even-odd dim never darkens where two line holes overlap.
-    static func merged(_ rects: [CGRect]) -> [CGRect] {
-        var result: [CGRect] = []
-        for rect in rects {
-            var current = rect
-            while let index = result.firstIndex(where: { $0.intersects(current) }) {
-                current = current.union(result.remove(at: index))
-            }
-            result.append(current)
-        }
-        return result
     }
 
     // MARK: Text
@@ -1509,31 +1530,45 @@ extension OverlayView {
         return text
     }
 
-    private func updateTextLabel() {
-        guard hasControls else { return }
-        guard mode == .text, let range = textRange, let layout = textLayout, !layout.isEmpty else {
-            textLabel.stringValue = translatedLines != nil ? "Translated on this Mac · select text to copy or listen" :
-                "Select text · stays on this Mac"
-            return
-        }
-        let count = range.upper - range.lower + 1
-        textLabel.stringValue = count == 1 ? "1 word selected" : "\(count) words selected"
-    }
-
     // MARK: Commands
 
+    /// Selects every word on this screen, waiting for them to be recognized; nothing is searched.
     func selectAllText() {
-        guard mode == .text else { return }
+        textWanted = true
+        updateToast()
         ensureRecognized { [weak self] in
-            guard let self, self.mode == .text, let all = self.textLayout?.all else { return }
+            guard let self, self.drag == nil else { return }
+            guard let all = self.textLayout?.all else {
+                self.flash("No text found on this screen")
+                return
+            }
+            self.textDrag = nil
             self.textRange = all
+            self.hideSelectTextChip()
             self.textChanged(dragging: false)
+            self.actions.textChanged(self, self.selectedText, false)
         }
+    }
+
+    /// Leaves text selection for visual search.
+    func clearTextSelection() {
+        guard textRange != nil || textDrag != nil else { return }
+        textRange = nil
+        textDrag = nil
+        stopSpeaking()
+        rebuildChip()
+        updateStage()
+    }
+
+    /// The text selection is final: its menu appears and its words are searched.
+    private func textSettled() {
+        hideSelectTextChip()
+        textChanged(dragging: false)
+        actions.textChanged(self, selectedText, true)
     }
 
     /// Copies the selection, or all text when nothing is selected, keeping its line breaks. The overlay stays open.
     @objc func copyText() {
-        guard mode == .text else { return }
         let text = textRange != nil ? selectedText : allShownText
         guard !text.isEmpty else {
             flash("No text to copy")
@@ -1595,14 +1630,14 @@ extension OverlayView {
             if warning == "No text found on this screen" { warning = nil }
         }
         updateStage()
-        updateTextLabel()
         if dragging { actionChip.isHidden = true } else { rebuildChip() }
         updateToast()
     }
 
     /// Copy, Select all, Listen, Translate and Search, then actions for anything detected in the selection.
     func rebuildChip() {
-        guard mode == .text, let layout = textLayout, !layout.isEmpty, !recognizing, textDrag == nil else {
+        guard let layout = textLayout, !layout.isEmpty, !recognizing, textDrag == nil,
+              textRange != nil || translatedLines != nil || translating else {
             actionChip.isHidden = true
             return
         }
@@ -1693,114 +1728,40 @@ extension OverlayView {
         return best.map { ($0.fixed, $0.lift) }
     }
 
-    func textCursor(at point: CGPoint) -> NSCursor {
-        guard let layout = textLayout, !layout.isEmpty else { return .arrow }
-        if handleHit(at: point) != nil { return .openHand }
-        return layout.index(at: point, canvas: canvas) != nil ? .iBeam : .crosshair
-    }
+    // MARK: Select text from a visual search
 
-    func textMouseDown(_ event: NSEvent, at point: CGPoint) {
-        guard let layout = textLayout, !layout.isEmpty else { return }
-        warning = nil
-        if let handle = handleHit(at: point) {
-            textDrag = .handle(fixed: handle.fixed, lift: handle.lift)
-            NSCursor.closedHand.set()
-        } else if let index = layout.index(at: point, canvas: canvas) {
-            if event.modifierFlags.contains(.shift), let range = textRange {
-                textRange = TextRange(anchor: range.anchor, focus: index)
-                textDrag = .select(anchor: range.anchor)
-            } else if event.clickCount == 2 {
-                textRange = layout.lineRange(containing: index)
-                textDrag = nil
-            } else if event.clickCount >= 3 {
-                textRange = layout.blockRange(containing: index)
-                textDrag = nil
-            } else {
-                textRange = TextRange(anchor: index, focus: index)
-                textDrag = .select(anchor: index)
-            }
-        } else {
-            // Circling or dragging a box over empty space selects the words inside, as in Search mode.
-            textDrag = .ink
-            points = [clamp(point, to: bounds)]
-            inkLayer.removeAllAnimations()
-            inkLayer.opacity = 1
-            inkLayer.path = Self.inkPath(points)
-        }
-        stopSpeaking()
-        textChanged(dragging: textDrag != nil)
-    }
-
-    func textMouseDragged(_ point: CGPoint) {
-        guard let drag = textDrag, let layout = textLayout else { return }
-        switch drag {
-        case .select(let anchor):
-            if let index = layout.nearestIndex(to: point, canvas: canvas) {
-                textRange = TextRange(anchor: anchor, focus: index)
-            }
-        case .handle(let fixed, let lift):
-            if let index = layout.nearestIndex(to: CGPoint(x: point.x, y: point.y + lift), canvas: canvas) {
-                textRange = TextRange(anchor: fixed, focus: index)
-            }
-        case .ink:
-            points.append(clamp(point, to: bounds))
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            inkLayer.path = Self.inkPath(points)
-            CATransaction.commit()
-            textRange = layout.range(inside: SelectionEditor.strokeBounds(points, in: bounds), canvas: canvas)
-        }
-        textChanged(dragging: true)
-    }
-
-    func textMouseUp(_ point: CGPoint) {
-        guard let drag = textDrag else {
-            textChanged(dragging: false)
-            return
-        }
-        textMouseDragged(point)
-        textDrag = nil
-        if case .ink = drag {
-            let stroke = points
-            points.removeAll()
-            inkLayer.path = nil
-            if SelectionEditor.isTap(stroke) { textRange = nil }
-        }
-        updateCursor(at: point)
-        textChanged(dragging: false)
-    }
-
-    // MARK: Select text from Search mode
-
-    /// After circling in Search mode, offers "Select text" when the area contains words, as Lens does.
+    /// Offers the words of a visually searched area, as Lens does when its picture search wins: "Select text" for a
+    /// circled area, "Select all text" for the whole screen. Hidden while text is selected or translated.
     func updateSelectTextChip() {
-        guard mode == .search, selection != nil, !isWhole else {
+        guard textRange == nil, textDrag == nil, drag == nil, translatedLines == nil, !translating,
+              let selection, let layout = textLayout,
+              (isWhole ? layout.all : layout.range(inside: selection, canvas: canvas)) != nil else {
             hideSelectTextChip()
             return
         }
-        ensureRecognized { [weak self] in
-            guard let self, self.mode == .search, let layout = self.textLayout, let selection = self.selection,
-                  !self.isWhole, self.drag == nil, layout.range(inside: selection, canvas: self.canvas) != nil else {
-                self?.hideSelectTextChip()
-                return
-            }
-            self.showSelectTextChip(near: selection)
-        }
+        showSelectTextChip(near: selection)
     }
 
     private func showSelectTextChip(near selection: CGRect) {
+        let title = isWhole ? "Select all text" : "Select text"
         let button: ChipButton
-        if let existing = selectTextButton {
+        if let existing = selectTextButton, existing.title == title {
             button = existing
         } else {
-            button = ChipButton("Select text", symbol: "text.viewfinder") { [weak self] in self?.selectTextFromSearch() }
+            selectTextButton?.removeFromSuperview()
+            button = ChipButton(title, symbol: "text.viewfinder") { [weak self] in self?.selectTextFromSearch() }
             selectTextChip.content.addSubview(button)
             selectTextButton = button
         }
         let size = CGSize(width: button.preferredWidth + 12, height: 36)
         let floor = (hasControls ? barFrame.maxY : 12) + 10
-        var origin = CGPoint(x: selection.midX - size.width / 2, y: selection.minY - 14 - size.height)
-        if origin.y < floor { origin.y = max(floor, selection.minY + 14) }
+        var origin: CGPoint
+        if isWhole {
+            origin = CGPoint(x: bounds.midX - size.width / 2, y: floor)
+        } else {
+            origin = CGPoint(x: selection.midX - size.width / 2, y: selection.minY - 14 - size.height)
+            if origin.y < floor { origin.y = max(floor, selection.minY + 14) }
+        }
         origin.x = min(max(origin.x, bounds.minX + 12), bounds.maxX - 12 - size.width)
         var frame = CGRect(origin: origin, size: size)
         if panelShown, frame.intersects(panelFrame) {
@@ -1813,10 +1774,18 @@ extension OverlayView {
 
     func hideSelectTextChip() { selectTextChip.isHidden = true }
 
-    /// Switches to Text mode with the circled words already selected.
+    /// Selects the words of the searched area: a circled area's words are searched as text, all text is not.
     @objc func selectTextFromSearch() {
         guard let layout = textLayout, let selection else { return }
-        setMode(.text, range: layout.range(inside: selection, canvas: canvas))
+        if isWhole {
+            selectAllText()
+            return
+        }
+        guard let range = layout.range(inside: selection, canvas: canvas) else { return }
+        actions.began(self)
+        textRange = range
+        updateStage()
+        textSettled()
     }
 
     // MARK: Translation
@@ -1830,11 +1799,18 @@ extension OverlayView {
     /// Translates the text on this screen in place, like Lens's Translate: on this Mac when Apple's translation is
     /// available, otherwise through Google Translate after consent.
     func beginTranslation() {
-        if mode != .text { setMode(.text) }
+        hideSelectTextChip()
+        // The whole screen is translated, so a circled area gives way to the whole-screen frame.
+        if case .unit = area, textRange == nil {
+            area = .screen
+            updateStage()
+        }
+        textWanted = true
         translateBar.isHidden = false
         translateBar.frame = translateBarFrame
+        updateToast()
         ensureRecognized { [weak self] in
-            guard let self, self.mode == .text else { return }
+            guard let self else { return }
             guard let layout = self.textLayout, !layout.isEmpty else {
                 self.translateBar.isHidden = true
                 self.flash("No text to translate on this screen")
@@ -1882,14 +1858,16 @@ extension OverlayView {
         translateBar.isHidden = false
         textSurface.translation.contents = renderTranslation(lines, layout: layout)
         updateStage()
-        updateTextLabel()
         rebuildChip()
         updateToast()
     }
 
     func translationFailed(_ message: String?) {
         translating = false
-        if translatedLines == nil { translateBar.isHidden = true }
+        if translatedLines == nil {
+            translateBar.isHidden = true
+            updateSelectTextChip()
+        }
         if let message { warning = message }
         updateToast()
         rebuildChip()
@@ -1911,8 +1889,8 @@ extension OverlayView {
         translateBar.originalToggle.state = .off
         translateBar.isHidden = true
         updateStage()
-        updateTextLabel()
         rebuildChip()
+        updateSelectTextChip()
         updateToast()
         needsLayout = true
     }

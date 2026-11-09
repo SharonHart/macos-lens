@@ -4,8 +4,6 @@ import LensCore
 import ScreenCaptureKit
 import Security
 
-enum CaptureMode { case search, text }
-
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
     private var status: NSStatusItem!
@@ -25,6 +23,10 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// The sheet shows a text search, translation or prompt, so live visual-search updates must not replace it.
     private var showingTextPage = false
     private var liveSearch: LiveSearch<String>?
+    /// A settled text selection is searched as text after a short pause, so a double or triple click that grows the
+    /// selection replaces it instead of searching each step.
+    private var pendingTextSearch: DispatchWorkItem?
+    private var lastTextSearch: String?
     private weak var panelView: OverlayView?
     private weak var selectedView: OverlayView?
     private var uploadCheckbox: NSButton?
@@ -58,7 +60,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         status.button?.imageScaling = .scaleNone
         menu = NSMenu()
         menu.addItem(item("Search screen…", #selector(searchScreen)))
-        menu.addItem(item("Select text on screen…", #selector(selectText)))
+        menu.addItem(item("Select all text on screen…", #selector(selectText)))
         menu.addItem(.separator())
         menu.addItem(item("Settings & privacy…", #selector(showSettings)))
         menu.addItem(item("Fix Screen Recording permission…", #selector(fixScreenRecording)))
@@ -111,8 +113,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() { NSApp.terminate(nil) }
-    @objc private func searchScreen() { activate(mode: .search) }
-    @objc private func selectText() { activate(mode: .text) }
+    @objc private func searchScreen() { activate() }
+    @objc private func selectText() { activate(selectingAllText: true) }
 
     @objc private func statusClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp || NSApp.currentEvent?.modifierFlags.contains(.control) == true {
@@ -120,13 +122,14 @@ final class AppController: NSObject, NSApplicationDelegate {
                 menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
             }
         } else {
-            activate(mode: .search)
+            activate()
         }
     }
 
     // MARK: Shortcuts
 
-    /// Two global shortcuts: one opens visual search, the other opens the overlay straight in Text mode.
+    /// Two global shortcuts open the same view: one ready to circle or select anything, the other with all text
+    /// already selected.
     private func registerShortcuts() {
         hotKeys.forEach { UnregisterEventHotKey($0) }
         hotKeys.removeAll()
@@ -139,7 +142,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
                 let text = id.id == AppController.textHotKey
                 let controller = Unmanaged<AppController>.fromOpaque(userData).takeUnretainedValue()
-                DispatchQueue.main.async { controller.activate(mode: text ? .text : .search) }
+                DispatchQueue.main.async { controller.activate(selectingAllText: text) }
                 return noErr
             }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
             guard install == noErr else {
@@ -148,7 +151,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
         }
         let search = shortcut, text = textShortcut
-        status.button?.toolTip = "Search screen (\(search.title)) · select text (\(text.title)); " +
+        status.button?.toolTip = "Search screen (\(search.title)) · select all text (\(text.title)); " +
                                  "right-click for more"
         setLauncherShortcutText()
         var problems: [String] = []
@@ -184,12 +187,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private var launcherShortcutText: String {
-        "\(shortcut.title): search the screen · \(textShortcut.title): select text"
+        "\(shortcut.title): search the screen · \(textShortcut.title): select all text"
     }
 
     // MARK: Capture
 
-    func activate(mode: CaptureMode) {
+    func activate(selectingAllText: Bool = false) {
         guard !busy, overlays.isEmpty else { return }
         // The shortcut always opens the selection overlay; only missing Screen Recording access stops it.
         guard CGPreflightScreenCaptureAccess() else {
@@ -207,7 +210,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             do {
                 let frames = try await captureDisplays()
                 // All screenshots are acquired before any overlay can appear in the capture.
-                showOverlays(frames, mode: mode)
+                showOverlays(frames, selectingAllText: selectingAllText)
                 busy = false
             } catch {
                 busy = false
@@ -237,17 +240,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         return frames
     }
 
-    func showOverlays(_ frames: [(NSScreen, CGImage)], mode: CaptureMode) {
+    func showOverlays(_ frames: [(NSScreen, CGImage)], selectingAllText: Bool = false) {
         let mouse = NSEvent.mouseLocation
         let active = frames.firstIndex(where: { $0.0.frame.contains(mouse) }) ?? 0
         let search = LiveSearch<String>()
         liveSearch = search
         wantsPanel = false
         showingTextPage = false
+        cancelTextSearch()
+        lastTextSearch = nil
         var actions = OverlayActions()
-        actions.began = { [weak self] _ in self?.liveSearch?.postpone() }
+        actions.began = { [weak self] _ in
+            self?.liveSearch?.postpone()
+            self?.cancelTextSearch()
+        }
         actions.changed = { [weak self] view, immediately in self?.selectionChanged(view, immediately: immediately) }
-        actions.modeChanged = { [weak self] view, mode in self?.modeChanged(view, to: mode) }
+        actions.textChanged = { [weak self] view, text, search in self?.textSelected(view, text: text, search: search) }
         actions.textCommand = { [weak self] view, command, text in self?.textCommand(view, command, text: text) }
         actions.quick = { [weak self] view, action in self?.quickAction(view, action) }
         actions.translate = { [weak self] view, request in self?.translate(view, request) }
@@ -257,8 +265,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         overlays = frames.enumerated().map { index, frame in
             let (screen, image) = frame
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image,
-                                   displayIndex: index, mode: mode, topInset: screen.safeAreaInsets.top,
-                                   selected: index == active, controls: index == active, actions: actions)
+                                   displayIndex: index, topInset: screen.safeAreaInsets.top,
+                                   selected: index == active, controls: index == active,
+                                   selectingAllText: selectingAllText && index == active, actions: actions)
             return OverlayWindow(screen: screen, overlay: view, escape: { [weak self] in self?.dismiss() })
         }
         let main = overlays[active].overlay
@@ -274,7 +283,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         for window in overlays { window.overlay.playIntro() }
         refreshPanel()
         // The whole-screen selection is searched after the debounce unless the user starts selecting first.
-        if mode == .search { selectionChanged(main, immediately: false) }
+        if !selectingAllText { selectionChanged(main, immediately: false) }
     }
 
     private var uploadAllowed: Bool { defaults.bool(forKey: "experimentalUpload") }
@@ -288,7 +297,8 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// The sheet slides in once there is something to show: an upload, results, an error or the privacy disclosure.
     private func revealPanelIfWanted() {
-        guard wantsPanel, let panelView, let liveSearch, panelView.mode == .search else { return }
+        guard wantsPanel, let panelView, let liveSearch, !showingTextPage,
+              !(selectedView ?? panelView).hasTextSelection else { return }
         switch liveSearch.state {
         case .uploading, .loaded, .failed: panelView.revealPanel()
         case .idle, .waiting: if !uploadAllowed { panelView.revealPanel() }
@@ -303,8 +313,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func selectionChanged(_ view: OverlayView, immediately: Bool) {
-        // Text mode never uploads the screenshot.
-        guard overlays.contains(where: { $0.overlay === view }), view.mode == .search else { return }
+        // Selected text never uploads the screenshot.
+        guard overlays.contains(where: { $0.overlay === view }), !view.hasTextSelection else { return }
         if view.hasSelection {
             for window in overlays where window.overlay !== view { window.overlay.clearSelection() }
             selectedView = view
@@ -352,30 +362,60 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func panelVisibilityChanged(_ visible: Bool) {
         wantsPanel = visible
         if visible {
-            if let selectedView, selectedView.mode == .search { selectionChanged(selectedView, immediately: false) }
+            if let selectedView, !selectedView.hasTextSelection, !showingTextPage {
+                selectionChanged(selectedView, immediately: false)
+            }
         } else {
             liveSearch?.cancel()
             showingTextPage = false
         }
     }
 
-    /// Search and Text share the frozen screenshot on every display. Entering Text stops visual search; returning
-    /// to Search resumes it for the current selection.
-    private func modeChanged(_ view: OverlayView, to mode: CaptureMode) {
-        for window in overlays where window.overlay !== view { window.overlay.setMode(mode, notify: false) }
-        if mode == .text {
-            liveSearch?.cancel()
-            wantsPanel = false
-            showingTextPage = false
-            panelView?.setBusy(false)
-            panelView?.setActivity(nil)
-            panelView?.hidePanel()
-        } else {
-            showingTextPage = false
-            if let target = selectedView ?? panelView, target.hasSelection {
-                selectionChanged(target, immediately: false)
-            }
+    /// Selected text is searched as text, never as a picture: the visual search stops, and when visual search is
+    /// allowed only the selected words are sent to Google after a short pause. Selecting all text searches nothing.
+    private func textSelected(_ view: OverlayView, text: String, search: Bool) {
+        guard overlays.contains(where: { $0.overlay === view }) else { return }
+        for window in overlays where window.overlay !== view {
+            window.overlay.clearSelection()
+            window.overlay.clearTextSelection()
         }
+        selectedView = view
+        liveSearch?.cancel()
+        panelView?.setBusy(false)
+        panelView?.setActivity(nil)
+        cancelTextSearch()
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard search, uploadAllowed, !query.isEmpty else {
+            if !showingTextPage {
+                wantsPanel = false
+                panelView?.hidePanel()
+            }
+            return
+        }
+        guard query != lastTextSearch || !showingTextPage else { return }
+        let work = DispatchWorkItem { [weak self, weak view] in
+            guard let self, let view, view.hasTextSelection, view.selectedText.trimmingCharacters(
+                in: .whitespacesAndNewlines) == query else { return }
+            self.showTextSearch(query)
+        }
+        pendingTextSearch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.35, NSEvent.doubleClickInterval), execute: work)
+    }
+
+    private func showTextSearch(_ query: String) {
+        guard let panelView, let panel = panelView.panel else { return }
+        pendingTextSearch = nil
+        lastTextSearch = query
+        liveSearch?.cancel()
+        showingTextPage = true
+        wantsPanel = true
+        panel.showPage(SearchURL.text(query), title: "Google Search")
+        panelView.revealPanel()
+    }
+
+    private func cancelTextSearch() {
+        pendingTextSearch?.cancel()
+        pendingTextSearch = nil
     }
 
     private func allowVisualSearch() {
@@ -386,13 +426,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         if let selectedView { selectionChanged(selectedView, immediately: true) }
     }
 
-    // MARK: Text mode
+    // MARK: Text
 
-    /// Search or translate marked text in the sheet, after showing exactly what will be sent.
+    /// Search or translate selected text in the sheet. Searching goes straight to Google when visual search is
+    /// allowed; otherwise, and for translation, the sheet first shows exactly what will be sent.
     private func textCommand(_ view: OverlayView, _ command: TextCommand, text: String, title: String? = nil) {
         guard let panelView, let panel = panelView.panel else { return }
         let googleLanguage = SearchURL.translateLanguage(for: Locale.preferredLanguages.first)
         let search = command == .search
+        cancelTextSearch()
+        if search, uploadAllowed {
+            showTextSearch(text)
+            return
+        }
         let url = search ? SearchURL.text(text) : SearchURL.translate(text, to: googleLanguage)
         liveSearch?.cancel()
         showingTextPage = true
@@ -586,7 +632,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         var target = url
         if let panel = panelView?.panel, panel.mode == .lens, uploadAllowed, let view = selectedView,
-           view.mode == .search, view.hasSelection, let crop = try? view.crop(),
+           !view.hasTextSelection, view.hasSelection, let crop = try? view.crop(),
            let page = try? Self.handoffPage(for: crop) {
             target = page
         }
@@ -837,7 +883,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         let search = button("Search screen…", #selector(searchScreen))
         (search.view as? NSButton)?.keyEquivalent = "\r"
-        form.add(search, button("Select text on screen…", #selector(selectText)), gap: 18)
+        form.add(search, button("Select all text on screen…", #selector(selectText)), gap: 18)
         form.add(button("Fix Screen Recording permission…", #selector(fixScreenRecording)),
                  button("Settings & privacy…", #selector(showSettings)), gap: 8)
         form.add(.item(CoffeeButton(target: self, action: #selector(openSupportPage)), height: 34),
@@ -885,14 +931,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         form.add(.item(mark, .fixed(32), height: 32), .item(label("Circle to Search, adapted for your Mac", bold: true)))
         form.add(.item(label(
             "Press the shortcut or use the menu-bar Lens icon. The screen freezes in place and starts fully " +
-            "selected. Circle, highlight, scribble or tap something to search it, drag the corners or edges to " +
-            "adjust, and drag inside to move. Switch to Text at the bottom (or use the text shortcut) to select " +
-            "words, then copy, listen, translate in place or search them. Pinch or scroll with two fingers to zoom " +
-            "and pan. Escape, ✕ or swiping the results down closes it.")), gap: 10)
+            "selected. Circle, scribble or tap something to search it; drag the corners or edges to adjust, and " +
+            "drag inside to move. Click, highlight or circle text to select its words, then copy, listen, " +
+            "translate or search them; the text shortcut opens it with all text selected. Pinch or scroll with " +
+            "two fingers to zoom and pan. Escape, ✕ or swiping the results down closes it.")), gap: 10)
         form.add(.item(label(
             "Screen capture, text recognition, Listen and Apple translation stay on this Mac. Visual search sends " +
             "ONLY the area inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you " +
-            "pause adjusting it. Text search and Google Translate send only the text you choose, after asking. " +
+            "pause adjusting it. Selected text is searched as text, sending only those words, and only when " +
+            "visual search is allowed; otherwise it asks first, as Google Translate does. " +
             "Your browser's cookies are never read and no public image host is used.")), gap: 10)
         let checkbox = NSButton(checkboxWithTitle: "Allow visual search (experimental Google Lens image upload)",
                                 target: self, action: #selector(toggleUpload(_:)))
@@ -998,7 +1045,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func tryOCR() {
         saveSettings()
-        activate(mode: .text)
+        activate(selectingAllText: true)
     }
 }
 

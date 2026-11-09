@@ -61,6 +61,13 @@ public enum OCR {
                 (objects.results ?? []).flatMap { ($0.salientObjects ?? []).map(\.boundingBox) })
     }
 
+    /// Salient objects in `image`, found on this Mac with Apple Vision; normalized boxes with a bottom-left origin.
+    public static func salientObjects(_ image: CGImage) throws -> [CGRect] {
+        let request = VNGenerateObjectnessBasedSaliencyImageRequest()
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).flatMap { ($0.salientObjects ?? []).map(\.boundingBox) }
+    }
+
     public static func fixture() throws -> CGImage {
         let image = NSImage(size: NSSize(width: 640, height: 240))
         image.lockFocus()
