@@ -49,6 +49,11 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     let placeholder = NSTextField(wrappingLabelWithString: "Circle, highlight or tap what you want to search.")
     let confirmation = NSView()
     private let confirmText = NSTextView()
+    private let confirmHeading = NSTextField(labelWithString: "")
+    private let confirmNote = NSTextField(wrappingLabelWithString: "")
+    private let confirmSend = NSButton(title: "", target: nil, action: nil)
+    private let confirmAlternative = NSButton(title: "", target: nil, action: nil)
+    private var onAlternative: (() -> Void)?
     private var onConfirm: (() -> Void)?
     private var onCancel: (() -> Void)?
     private let divider = PanelDivider()
@@ -183,11 +188,9 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     }
 
     private func buildConfirmation() {
-        let heading = NSTextField(labelWithString: "Translate this text?")
+        let heading = confirmHeading
         heading.font = .systemFont(ofSize: 15, weight: .semibold)
-        let note = NSTextField(wrappingLabelWithString:
-            "The text was recognized on this Mac. Only the text below is sent to Google Translate; " +
-            "the screenshot stays here.")
+        let note = confirmNote
         note.textColor = .secondaryLabelColor
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -205,11 +208,17 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         scroll.wantsLayer = true
         scroll.layer?.cornerRadius = 10
         scroll.layer?.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.5).cgColor
-        let send = NSButton(title: "Translate with Google", target: self, action: #selector(confirmPressed))
+        let send = confirmSend
+        send.target = self
+        send.action = #selector(confirmPressed)
         send.bezelColor = .controlAccentColor
         send.keyEquivalent = "\r"
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
-        for (index, view) in [heading, note, scroll, send, cancel].enumerated() {
+        let alternative = confirmAlternative
+        alternative.target = self
+        alternative.action = #selector(alternativePressed)
+        alternative.isHidden = true
+        for (index, view) in [heading, note, scroll, send, cancel, alternative].enumerated() {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.identifier = NSUserInterfaceItemIdentifier("confirm-\(index)")
             confirmation.addSubview(view)
@@ -227,7 +236,9 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
             send.leadingAnchor.constraint(equalTo: confirmation.leadingAnchor),
             send.bottomAnchor.constraint(equalTo: confirmation.bottomAnchor, constant: -6),
             cancel.leadingAnchor.constraint(equalTo: send.trailingAnchor, constant: 8),
-            cancel.centerYAnchor.constraint(equalTo: send.centerYAnchor)
+            cancel.centerYAnchor.constraint(equalTo: send.centerYAnchor),
+            alternative.trailingAnchor.constraint(equalTo: confirmation.trailingAnchor),
+            alternative.centerYAnchor.constraint(equalTo: send.centerYAnchor)
         ])
     }
 
@@ -318,10 +329,26 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 
     /// Shows the text recognized on this Mac and sends it to Google Translate only when confirmed.
     func confirmTranslation(text: String, onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        confirmSend(title: "Translate", heading: "Translate this text?",
+                    note: "The text was recognized on this Mac. Only the text below is sent to Google Translate; " +
+                          "the screenshot stays here.",
+                    button: "Translate with Google", text: text, onConfirm: onConfirm, onCancel: onCancel)
+    }
+
+    /// Asks before sending text recognized on this Mac to Google; nothing is sent unless the user confirms.
+    func confirmSend(title: String, heading: String, note: String, button: String, text: String,
+                     alternative: (title: String, action: () -> Void)? = nil,
+                     onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
         mode = .confirm
         self.onConfirm = onConfirm
         self.onCancel = onCancel
-        titleLabel.stringValue = "Translate"
+        onAlternative = alternative?.action
+        confirmAlternative.title = alternative?.title ?? ""
+        confirmAlternative.isHidden = alternative == nil
+        titleLabel.stringValue = title
+        confirmHeading.stringValue = heading
+        confirmNote.stringValue = note
+        confirmSend.title = button
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "Nothing has been sent."
         setBusy(false)
@@ -351,6 +378,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         let action = onConfirm
         onConfirm = nil
         onCancel = nil
+        onAlternative = nil
         action?()
     }
 
@@ -358,6 +386,15 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         let action = onCancel
         onConfirm = nil
         onCancel = nil
+        onAlternative = nil
+        action?()
+    }
+
+    @objc private func alternativePressed() {
+        let action = onAlternative
+        onConfirm = nil
+        onCancel = nil
+        onAlternative = nil
         action?()
     }
 

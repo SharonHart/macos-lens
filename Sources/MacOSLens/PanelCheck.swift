@@ -73,14 +73,14 @@ enum PanelCheck {
         print("PASS results panel upload, thumbnail, cached reload and cancellation (synthetic image only).")
     }
 
-    private static func settle(_ web: WKWebView, extra: Duration = .seconds(3)) async throws {
+    static func settle(_ web: WKWebView, extra: Duration = .seconds(3)) async throws {
         let deadline = Date().addingTimeInterval(30)
         while web.isLoading && Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
         try await Task.sleep(for: extra)
         guard !web.isLoading else { throw LensError.message("The results page did not finish loading in 30 seconds.") }
     }
 
-    private static func thumbnail(_ web: WKWebView) async -> String {
+    static func thumbnail(_ web: WKWebView) async -> String {
         await evaluate(web, """
             (() => {
               const image = [...document.images].find(i => /searched image/i.test(i.alt || ''));
@@ -90,7 +90,7 @@ enum PanelCheck {
             """)
     }
 
-    private static func save(_ web: WKWebView, to url: URL) async throws {
+    static func save(_ web: WKWebView, to url: URL) async throws {
         let image = try await web.takeSnapshot(configuration: nil)
         guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?
             .representation(using: .png, properties: [:]) else {
@@ -100,7 +100,7 @@ enum PanelCheck {
         print("PANEL_SNAPSHOT \(url.path)")
     }
 
-    private static func evaluate(_ web: WKWebView, _ script: String) async -> String {
+    static func evaluate(_ web: WKWebView, _ script: String) async -> String {
         await withCheckedContinuation { continuation in
             web.evaluateJavaScript(script) { value, error in
                 continuation.resume(returning: (value as? String) ?? error?.localizedDescription ?? "")

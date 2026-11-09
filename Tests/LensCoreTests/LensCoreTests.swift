@@ -499,6 +499,328 @@ final class LensCoreTests {
     }
 }
 
+private func line(_ text: String, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat = 0.04) -> RecognizedLine {
+    RecognizedLine.estimated(text: text, box: CGRect(x: x, y: y, width: width, height: height))
+}
+
+extension LensCoreTests {
+    func testTextUnitsKeepPunctuationAndCJK() {
+        func units(_ text: String) -> [String] { TextSplitter.units(of: text).map { String(text[$0.range]) + $0.separator } }
+        XCTAssertEqual(units("Hello, world! Call 555-1234."), ["Hello, ", "world! ", "Call ", "555-", "1234."])
+        XCTAssertEqual(units("(hello) world"), ["(hello) ", "world"])
+        XCTAssertEqual(units("東京タワーへ行く"), ["東京", "タワー", "へ", "行く"])
+        XCTAssertEqual(units("你好世界 东京塔").joined(), "你好世界 东京塔", "units rebuild the line exactly")
+        XCTAssertEqual(units("   "), [])
+        XCTAssertEqual(units("—"), ["—"], "a line of punctuation is still selectable")
+    }
+
+    func testBrokenVisionBoxesAreRepaired() {
+        let text = "call 555-1234"
+        let splits = TextSplitter.units(of: text)
+        let line = CGRect(x: 0.1, y: 0.5, width: 0.4, height: 0.05)
+        let shared = CGRect(x: 0.3, y: 0.5, width: 0.2, height: 0.05)
+        let boxes = TextSplitter.repairedBoxes([CGRect(x: 0.1, y: 0.5, width: 0.1, height: 0.05), shared, shared],
+                                               lineBox: line, text: text, ranges: splits.map(\.range), rightToLeft: false)
+        XCTAssertEqual(boxes.count, 3)
+        XCTAssertTrue(abs(boxes[1].minX - 0.3) < 1e-9 && abs(boxes[2].maxX - 0.5) < 1e-9, "\(boxes)")
+        XCTAssertTrue(abs(boxes[1].maxX - boxes[2].minX) < 1e-9, "a shared box is divided between its words")
+        let missing = TextSplitter.repairedBoxes([nil, line, CGRect(x: 0, y: 0, width: 0, height: 1)],
+                                                 lineBox: line, text: text, ranges: splits.map(\.range), rightToLeft: false)
+        XCTAssertTrue(missing.allSatisfy { $0.width < line.width && line.insetBy(dx: -0.001, dy: -0.001).contains($0) },
+                      "missing and whole-line boxes are estimated: \(missing)")
+        XCTAssertTrue(missing[0].minX < missing[1].minX && missing[1].minX < missing[2].minX)
+    }
+
+    func testReadingOrderBlocksAndJoining() {
+        // Two columns of wrapped paragraphs, given to the layout out of order.
+        let layout = TextLayout(lines: [
+            line("right column one", 0.55, 0.80, 0.35), line("left wraps onto", 0.05, 0.80, 0.35),
+            line("the next line.", 0.05, 0.75, 0.33), line("right two", 0.55, 0.75, 0.20),
+            line("Footer", 0.05, 0.20, 0.10)
+        ])
+        XCTAssertEqual(layout.blocks.count, 3)
+        XCTAssertEqual(layout.allText, "left wraps onto\nthe next line.\n\nright column one\nright two\n\nFooter",
+                       "lines keep their breaks and paragraphs get a blank line")
+        XCTAssertEqual(layout.text(for: layout.all!, flowing: true),
+                       "left wraps onto the next line.\nright column one right two\nFooter")
+        XCTAssertEqual(layout.words.first?.text, "left")
+        XCTAssertEqual(layout.text(for: TextRange(anchor: 4, focus: 2)), "onto\nthe next",
+                       "a range reads the same from either end")
+    }
+
+    func testRightToLeftAndCJKJoining() {
+        let arabic = TextLayout(lines: [line("مرحبا بالعالم", 0.40, 0.80, 0.50), line("الجميل جدا", 0.60, 0.75, 0.30)])
+        XCTAssertTrue(arabic.lines.allSatisfy(\.rightToLeft))
+        XCTAssertEqual(arabic.allText, "مرحبا بالعالم\nالجميل جدا", "Arabic lines in reading order")
+        XCTAssertEqual(arabic.text(for: arabic.all!, flowing: true), "مرحبا بالعالم الجميل جدا")
+        let first = arabic.view(0, in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let second = arabic.view(1, in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        XCTAssertTrue(first.minX > second.minX, "the first Arabic word is on the right")
+        let handles = arabic.handlePoints(for: TextRange(anchor: 0, focus: 1), canvas: CGRect(x: 0, y: 0, width: 100, height: 100))
+        XCTAssertTrue(handles.map { abs($0.start.x - first.maxX) < 1e-6 && abs($0.end.x - second.minX) < 1e-6 } == true,
+                      "right-to-left handles sit on the right of the first word and the left of the last")
+
+        let columns = TextLayout(lines: [line("يسار", 0.05, 0.80, 0.20), line("يمين", 0.70, 0.80, 0.20)])
+        XCTAssertEqual(columns.allText, "يمين\n\nيسار", "right-to-left blocks side by side are read right first")
+
+        let chinese = TextLayout(lines: [line("你好世界东京塔", 0.1, 0.80, 0.50), line("很高", 0.1, 0.75, 0.48)])
+        XCTAssertEqual(chinese.text(for: chinese.all!, flowing: true), "你好世界东京塔很高",
+                       "wrapped Chinese lines join without a space")
+        XCTAssertEqual(chinese.allText, "你好世界东京塔\n很高")
+    }
+
+    func testTextRangesAndHitTesting() {
+        let canvas = CGRect(x: 0, y: 0, width: 1000, height: 1000)
+        let layout = TextLayout(lines: [line("alpha beta gamma", 0.1, 0.80, 0.6), line("delta epsilon", 0.1, 0.75, 0.5),
+                                        line("zeta", 0.1, 0.30, 0.2)])
+        let beta = layout.view(1, in: canvas)
+        XCTAssertEqual(layout.index(at: CGPoint(x: beta.midX, y: beta.midY), canvas: canvas), 1)
+        XCTAssertNil(layout.index(at: CGPoint(x: 950, y: 500), canvas: canvas))
+        XCTAssertEqual(layout.nearestIndex(to: CGPoint(x: 990, y: beta.midY), canvas: canvas), 2,
+                       "past the end of a line, the cursor reaches its last word")
+        XCTAssertEqual(layout.nearestIndex(to: CGPoint(x: 120, y: 760), canvas: canvas), 3)
+        XCTAssertEqual(layout.lineRange(containing: 4), TextRange(anchor: 3, focus: 4))
+        XCTAssertEqual(layout.blockRange(containing: 0), TextRange(anchor: 0, focus: 4))
+        XCTAssertEqual(layout.blockRange(containing: 5), TextRange(anchor: 5, focus: 5))
+        XCTAssertEqual(layout.all, TextRange(anchor: 0, focus: 5))
+        XCTAssertEqual(layout.range(inside: CGRect(x: 0, y: 700, width: 1000, height: 150), canvas: canvas),
+                       TextRange(anchor: 0, focus: 4), "circling words selects them")
+        XCTAssertNil(layout.range(inside: CGRect(x: 0, y: 0, width: 50, height: 50), canvas: canvas))
+        let rects = layout.lineRects(for: TextRange(anchor: 2, focus: 3), canvas: canvas)
+        XCTAssertEqual(rects.count, 2, "one highlight per line")
+        XCTAssertTrue(rects[0].maxY > rects[1].maxY)
+        XCTAssertEqual(layout.text(for: TextRange(anchor: 2, focus: 3)), "gamma\ndelta")
+        let handles = layout.handlePoints(for: TextRange(anchor: 1, focus: 1), canvas: canvas)
+        XCTAssertTrue(handles.map { abs($0.start.x - beta.minX) < 1e-6 && abs($0.end.x - beta.maxX) < 1e-6 } == true)
+        XCTAssertTrue(TextLayout.empty.isEmpty && TextLayout.empty.allText.isEmpty && TextLayout.empty.all == nil)
+    }
+
+    func testOCRWordsFromMultiLineFixture() throws {
+        let image = NSImage(size: NSSize(width: 900, height: 300))
+        image.lockFocus()
+        NSColor.white.setFill()
+        NSRect(x: 0, y: 0, width: 900, height: 300).fill()
+        let font: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 44), .foregroundColor: NSColor.black]
+        ("Quick brown fox" as NSString).draw(at: NSPoint(x: 40, y: 150), withAttributes: font)
+        ("jumps over dogs" as NSString).draw(at: NSPoint(x: 40, y: 90), withAttributes: font)
+        image.unlockFocus()
+        let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let layout = TextLayout(lines: try OCR.recognizeWords(cgImage, preferredLanguages: ["en-US"]), aspect: 3)
+        XCTAssertEqual(layout.words.map(\.text), ["Quick", "brown", "fox", "jumps", "over", "dogs"])
+        XCTAssertTrue(layout.words[0].box.maxX <= layout.words[1].box.minX + 0.01, "words have their own boxes")
+        XCTAssertEqual(layout.text(for: TextRange(anchor: 1, focus: 4)), "brown fox\njumps over")
+    }
+
+    func testRecognitionLanguagesAndDetection() {
+        let supported = ["en-US", "fr-FR", "zh-Hans", "zh-Hant", "ar-SA"]
+        XCTAssertEqual(TextLanguage.recognitionLanguages(preferred: ["en-IL", "he-IL"], supported: supported), ["en-US"],
+                       "Vision has no Hebrew, so it is skipped")
+        XCTAssertEqual(TextLanguage.recognitionLanguages(preferred: ["zh-Hant-TW", "fr-CA", "en"], supported: supported),
+                       ["zh-Hant", "fr-FR", "en-US"])
+        XCTAssertEqual(TextLanguage.recognitionLanguages(preferred: ["he"], supported: supported), ["en-US"])
+        XCTAssertEqual(TextLanguage.detect("Bonjour tout le monde, comment allez-vous aujourd'hui ?"), "fr")
+        XCTAssertEqual(TextLanguage.detect("مرحبا بالعالم الجميل"), "ar")
+        XCTAssertEqual(TextLanguage.detect("שלום עולם, מה שלומך היום"), "he")
+        XCTAssertNil(TextLanguage.detect("1234 5678"))
+    }
+
+    func testDataDetectorClassification() {
+        let text = "Write to bob@example.com or call +1 (408) 555-0199. Visit https://example.org/menu. " +
+                   "Office: 1 Infinite Loop, Cupertino, CA 95014. Meet on March 5, 2027 at 3pm."
+        let items = DataDetection.items(in: text)
+        XCTAssertTrue(items.contains(.email("bob@example.com")), "\(items)")
+        XCTAssertTrue(items.contains { if case .phone(let value) = $0 { return value.contains("555-0199") } else { return false } })
+        XCTAssertTrue(items.contains { if case .address(let value) = $0 { return value.contains("Cupertino") } else { return false } })
+        XCTAssertTrue(items.contains(.link(URL(string: "https://example.org/menu")!)))
+        XCTAssertTrue(items.contains { if case .date(_, let allDay, _) = $0 { return !allDay } else { return false } },
+                      "a date with a time is a timed event")
+        let titles = DataDetection.actions(for: items, selectedText: text).map(\.title)
+        XCTAssertEqual(titles, ["Send email", "Call", "Text", "Add to contacts", "Maps", "Open website", "Add to calendar"])
+
+        let actions = DataDetection.actions(for: items, selectedText: text)
+        XCTAssertTrue(actions.contains { $0.kind == .system(URL(string: "mailto:bob@example.com")!) })
+        XCTAssertTrue(actions.contains { $0.kind == .system(URL(string: "tel:+14085550199")!) })
+        XCTAssertTrue(actions.contains { $0.kind == .system(URL(string: "sms:+14085550199")!) })
+        XCTAssertTrue(actions.contains { if case .system(let url) = $0.kind { return url.absoluteString.hasPrefix("maps://?q=1%20Infinite%20Loop") } else { return false } },
+                      "addresses open in Apple Maps")
+        XCTAssertTrue(DataDetection.items(in: "Due March 5, 2027").contains { if case .date(_, let allDay, _) = $0 { return allDay } else { return false } },
+                      "a date without a time is an all-day event")
+        XCTAssertEqual(DataDetection.items(in: "Nothing to see here"), [])
+        XCTAssertNil(DataDetection.mailURL("a b@example.com"))
+        XCTAssertEqual(DataDetection.phoneURL("03-555 1234 ext", scheme: "tel"), URL(string: "tel:035551234"))
+    }
+
+    func testTrackingNumbers() {
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "UPS 1Z999AA10123456784 shipped"), ["1Z999AA10123456784"])
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "Parcel RR123456785IL"), ["RR123456785IL"])
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "Code RR123456784IL"), [], "the S10 check digit must match")
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "rr123456785il"), ["RR123456785IL"])
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "USPS 9400 1118 9922 3197 4284 90"), [],
+                       "spaced groups are not joined into one number")
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "9400111899223197428490"), ["9400111899223197428490"])
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "FedEx tracking: 123456789012"), ["123456789012"])
+        XCTAssertEqual(DataDetection.trackingNumbers(in: "Order 123456789012"), [], "bare digits need a carrier mention")
+        let items = DataDetection.items(in: "FedEx tracking: 123456789012")
+        XCTAssertEqual(items, [.tracking("123456789012")], "a tracking number is not also offered as a phone number")
+        XCTAssertEqual(DataDetection.actions(for: items, selectedText: "").map(\.kind), [.track("123456789012")])
+    }
+
+    func testContactAndCalendarFiles() {
+        let card = ContactCard(emails: ["bob@example.com"], phones: ["+1 (408) 555-0199"],
+                               addresses: ["1 Infinite Loop, Cupertino; CA"])
+        let vcf = card.vCard
+        XCTAssertTrue(vcf.hasPrefix("BEGIN:VCARD\r\nVERSION:3.0\r\n"))
+        XCTAssertTrue(vcf.hasSuffix("END:VCARD\r\n"))
+        XCTAssertTrue(vcf.contains("\r\nFN:bob@example.com\r\n"))
+        XCTAssertTrue(vcf.contains("\r\nEMAIL;TYPE=INTERNET:bob@example.com\r\n"))
+        XCTAssertTrue(vcf.contains("\r\nTEL;TYPE=VOICE:+1 (408) 555-0199\r\n"))
+        XCTAssertTrue(vcf.contains("\r\nADR;TYPE=WORK:;;1 Infinite Loop\\, Cupertino\\; CA;;;;\r\n"), vcf)
+        XCTAssertFalse(vcf.replacingOccurrences(of: "\r\n", with: "").contains("\n"))
+
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let start = utc.date(from: DateComponents(year: 2027, month: 3, day: 5, hour: 15))!
+        let notes = "Team lunch, room 4; bring a\nlaptop " + String(repeating: "é", count: 60)
+        let event = CalendarEvent(title: CalendarEvent.title(from: "\n  Team lunch\nMarch 5", fallback: "x"), start: start,
+                                  allDay: false, notes: notes)
+        XCTAssertEqual(event.title, "Team lunch")
+        let ics = event.iCalendar(uid: "fixed", stamp: start, timeZone: utc.timeZone)
+        XCTAssertTrue(ics.contains("\r\nDTSTART:20270305T150000Z\r\nDTEND:20270305T160000Z\r\n"), ics)
+        XCTAssertTrue(ics.contains("\r\nUID:fixed@macos-lens\r\n"))
+        XCTAssertTrue(ics.contains("\r\nSUMMARY:Team lunch\r\n"))
+        XCTAssertTrue(ics.contains("DESCRIPTION:Team lunch\\, room 4\\; bring a\\nlaptop"), ics)
+        for physical in ics.components(separatedBy: "\r\n") {
+            XCTAssertTrue(physical.utf8.count <= 75, "folded: \(physical)")
+        }
+        XCTAssertTrue(ics.contains("\r\n é"), "long lines continue with a leading space")
+        let unfolded = ics.replacingOccurrences(of: "\r\n ", with: "")
+        XCTAssertTrue(unfolded.contains(String(repeating: "é", count: 60)), "folding never splits a character")
+
+        let day = CalendarEvent(title: "Due", start: start, allDay: true, notes: "")
+            .iCalendar(uid: "d", stamp: start, timeZone: utc.timeZone)
+        XCTAssertTrue(day.contains("\r\nDTSTART;VALUE=DATE:20270305\r\nDTEND;VALUE=DATE:20270306\r\n"), day)
+    }
+
+    func testPanelWidthClamp() {
+        XCTAssertTrue(abs(PanelSizing.defaultWidth(screenWidth: 1728) - 622.08) < 0.01)
+        XCTAssertEqual(PanelSizing.defaultWidth(screenWidth: 1200), 560)
+        XCTAssertEqual(PanelSizing.defaultWidth(screenWidth: 2560), 760)
+        XCTAssertEqual(PanelSizing.clamp(300, screenWidth: 1728), 440)
+        XCTAssertEqual(PanelSizing.clamp(2000, screenWidth: 1728), 1256)
+        XCTAssertEqual(PanelSizing.clamp(400, screenWidth: 560), 380, "never wider than 75% of a small screen")
+        XCTAssertEqual(PanelSizing.width(stored: 500, screenWidth: 1728), 500, "the width the user dragged to is reused")
+        XCTAssertEqual(PanelSizing.width(stored: 5000, screenWidth: 1200), 860)
+        XCTAssertTrue(abs(PanelSizing.width(stored: nil, screenWidth: 1728) - 622.08) < 0.01)
+        XCTAssertEqual(PanelSizing.width(stored: 0, screenWidth: 1200), 560)
+    }
+
+    func testTextFitAndBackgroundSampling() throws {
+        XCTAssertEqual(TextFit.size(fitting: CGSize(width: 100, height: 30)) { CGSize(width: $0 * 5, height: $0 * 1.2) }, 20)
+        XCTAssertEqual(TextFit.size(fitting: CGSize(width: 1000, height: 12)) { CGSize(width: $0 * 5, height: $0 * 1.2) }, 10)
+        XCTAssertEqual(TextFit.size(fitting: CGSize(width: 1, height: 1)) { CGSize(width: $0, height: $0) }, 6,
+                       "text never shrinks below the minimum")
+        let fitted = TextFit.size(for: "Translated line", in: CGSize(width: 200, height: 40))
+        XCTAssertTrue(fitted >= 12 && fitted <= 40, "\(fitted)")
+
+        func sample(background: NSColor) throws -> SampledColor? {
+            let image = NSImage(size: NSSize(width: 200, height: 100))
+            image.lockFocus()
+            background.setFill()
+            NSRect(x: 0, y: 0, width: 200, height: 100).fill()
+            ("Text" as NSString).draw(at: NSPoint(x: 60, y: 30), withAttributes: [
+                .font: NSFont.boldSystemFont(ofSize: 36), .foregroundColor: background == .white ? NSColor.black : NSColor.white])
+            image.unlockFocus()
+            let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+            let scale = CGFloat(cgImage.width) / 200
+            return ImageSampling.background(of: cgImage, pixels: CGRect(x: 50 * scale, y: 20 * scale,
+                                                                        width: 110 * scale, height: 60 * scale))
+        }
+        let light = try XCTUnwrap(sample(background: .white))
+        XCTAssertTrue(light.isLight && light.luminance > 0.95, "\(light)")
+        let dark = try XCTUnwrap(sample(background: NSColor(srgbRed: 0.1, green: 0.2, blue: 0.4, alpha: 1)))
+        XCTAssertFalse(dark.isLight)
+        XCTAssertTrue(abs(dark.blue - 0.4) < 0.03, "\(dark)")
+    }
+
+    func testLensHandoffPage() throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0, 255, 13, 10])
+        let html = LensHandoff.html(png: png, language: "iw\"><script>alert(1)</script>")
+        XCTAssertFalse(html.contains("<script>alert"), "the language is escaped")
+        XCTAssertTrue(html.contains("action=\"https://lens.google.com/v3/upload?hl=iw%22%3E%3Cscript%3Ealert(1)%3C/script%3E\""), html)
+        let plain = LensHandoff.html(png: png, language: "en")
+        XCTAssertTrue(plain.contains("method=\"post\" enctype=\"multipart/form-data\" action=\"https://lens.google.com/v3/upload?hl=en\""))
+        func count(_ needle: String) -> Int { plain.components(separatedBy: needle).count - 1 }
+        XCTAssertEqual(count("<input"), 1, "the form has only the image field")
+        XCTAssertEqual(count("<textarea") + count("<select") + count("<iframe") + count("<link"), 0)
+        XCTAssertTrue(plain.contains("type=\"file\" name=\"encoded_image\""))
+        XCTAssertEqual(count("https://"), 1, "no URL other than the Lens form action")
+        XCTAssertEqual(count("http://"), 0)
+        XCTAssertEqual(count(png.base64EncodedString()), 1, "the picture is embedded once")
+        XCTAssertEqual(count("<script"), 1, "one inline script, allowed by its hash")
+        XCTAssertTrue(plain.contains("<script>\(LensHandoff.script)</script>"))
+        XCTAssertTrue(plain.contains("script-src '\(LensHandoff.scriptHash)'"))
+        XCTAssertTrue(plain.contains("default-src 'none'"))
+        XCTAssertFalse(plain.lowercased().contains("cookie"))
+        let source = try XCTUnwrap(plain.range(of: "data:image/png;base64,").map { plain[$0.upperBound...] })
+        let encoded = String(source.prefix { $0 != "\"" })
+        XCTAssertEqual(Data(base64Encoded: encoded), png)
+    }
+
+    func testTextShortcutAvoidsConflicts() {
+        XCTAssertEqual(Shortcut.text(named: nil, avoiding: .standard, symbolicHotKeys: nil).id, "command-shift-1")
+        let used: [String: Any] = ["900": ["enabled": 1, "value": ["parameters": [49, 18, Shortcut.command | Shortcut.shift]]]]
+        XCTAssertEqual(Shortcut.text(named: nil, avoiding: .standard, symbolicHotKeys: used).id, "control-shift-1",
+                       "a shortcut macOS uses is skipped")
+        XCTAssertEqual(Shortcut.text(named: "control-option-t", avoiding: .standard, symbolicHotKeys: nil).id, "control-option-t")
+        let search = Shortcut.textOptions[0]
+        XCTAssertEqual(Shortcut.text(named: nil, avoiding: search, symbolicHotKeys: nil).id, "control-shift-1",
+                       "never the same keys as the Search shortcut")
+    }
+
+    func testHandleToleranceIsAdjustable() {
+        let rect = CGRect(x: 100, y: 100, width: 400, height: 300)
+        let point = CGPoint(x: 85, y: 85)
+        let bounds = CGRect(x: 0, y: 0, width: 1000, height: 800)
+        XCTAssertEqual(SelectionEditor.target(at: point, selection: rect, bounds: bounds), .draw)
+        XCTAssertEqual(SelectionEditor.target(at: point, selection: rect, bounds: bounds, tolerance: 18), .resize(.bottomLeft))
+    }
+
+    func testSupportLinkComesFromInfoPlist() throws {
+        let plist = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Resources/Info.plist")
+        let data = try Data(contentsOf: plist)
+        let info = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let url = try XCTUnwrap(SupportLink.url(infoDictionary: info))
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "buymeacoffee.com")
+        XCTAssertEqual(url.absoluteString, info[SupportLink.key] as? String)
+        XCTAssertNil(SupportLink.url(infoDictionary: [SupportLink.key: "http://buymeacoffee.com/x"]))
+        XCTAssertNil(SupportLink.url(infoDictionary: [SupportLink.key: "https://buymeacoffee.com.evil.example/x"]))
+        XCTAssertNil(SupportLink.url(infoDictionary: [:]))
+    }
+
+    func testTranslationIsDistributedOverLines() {
+        XCTAssertEqual(TranslationLayout.distribute("Hola mundo", across: [10]), ["Hola mundo"])
+        XCTAssertEqual(TranslationLayout.distribute("uno dos tres cuatro", across: [8, 8]), ["uno dos", "tres cuatro"])
+        let three = TranslationLayout.distribute("a b c d e f", across: [2, 2, 2])
+        XCTAssertEqual(three, ["a b", "c d", "e f"])
+        XCTAssertEqual(three.joined(separator: " "), "a b c d e f")
+        let weighted = TranslationLayout.distribute("one two three four five six", across: [30, 6])
+        XCTAssertEqual(weighted.count, 2)
+        XCTAssertTrue(weighted[0].count > weighted[1].count, "\(weighted)")
+        XCTAssertEqual(TranslationLayout.distribute("", across: [3, 4]), ["", ""])
+        XCTAssertEqual(TranslationLayout.distribute("x", across: []), [])
+        let cjk = TranslationLayout.distribute("这是一个测试句子", across: [4, 4])
+        XCTAssertEqual(cjk.joined(), "这是一个测试句子")
+        XCTAssertFalse(cjk.contains(""), "\(cjk)")
+    }
+}
+
+private func XCTUnwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
+    guard let value else { throw LensError.message("Unexpected nil at \(file):\(line)") }
+    return value
+}
+
 @MainActor
 private func waitUntil(timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
@@ -537,7 +859,24 @@ let cases: [(String, () throws -> Void)] = [
     ("stroke bounds and taps", tests.testStrokeBoundsAndTaps),
     ("Vision boxes map to screenshot units", tests.testVisionBoxesMapToScreenshotUnits),
     ("refine and translate URLs", tests.testRefineAndTranslateURLs),
-    ("pull down to dismiss the results sheet", tests.testPullDownToDismiss)
+    ("pull down to dismiss the results sheet", tests.testPullDownToDismiss),
+    ("text units keep punctuation and CJK words", tests.testTextUnitsKeepPunctuationAndCJK),
+    ("broken Vision word boxes are repaired", tests.testBrokenVisionBoxesAreRepaired),
+    ("reading order, blocks and line joining", tests.testReadingOrderBlocksAndJoining),
+    ("right-to-left and CJK joining", tests.testRightToLeftAndCJKJoining),
+    ("text ranges and hit-testing", tests.testTextRangesAndHitTesting),
+    ("OCR words from a multi-line fixture", tests.testOCRWordsFromMultiLineFixture),
+    ("recognition languages and language detection", tests.testRecognitionLanguagesAndDetection),
+    ("data detector classification", tests.testDataDetectorClassification),
+    ("tracking numbers", tests.testTrackingNumbers),
+    ("contact and calendar files", tests.testContactAndCalendarFiles),
+    ("panel width clamp", tests.testPanelWidthClamp),
+    ("text fit and background sampling", tests.testTextFitAndBackgroundSampling),
+    ("Lens browser handoff page", tests.testLensHandoffPage),
+    ("Text shortcut avoids conflicts", tests.testTextShortcutAvoidsConflicts),
+    ("handle tolerance is adjustable", tests.testHandleToleranceIsAdjustable),
+    ("support link comes from Info.plist", tests.testSupportLinkComesFromInfoPlist),
+    ("translation is distributed over lines", tests.testTranslationIsDistributedOverLines)
 ]
 for (name, test) in cases {
     let before = failures

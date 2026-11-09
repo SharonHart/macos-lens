@@ -7,7 +7,10 @@ let package = Package(
     products: [.executable(name: "MacOSLens", targets: ["MacOSLens"])],
     targets: [
         .target(name: "LensCore"),
-        .executableTarget(name: "MacOSLens", dependencies: ["LensCore"]),
+        // Translation arrived in macOS 15; weak linking keeps the app launching on macOS 14.
+        .executableTarget(name: "MacOSLens", dependencies: ["LensCore"],
+                          linkerSettings: [.unsafeFlags(["-Xlinker", "-weak_framework", "-Xlinker", "Translation",
+                                                         "-Xlinker", "-weak_framework", "-Xlinker", "_Translation_SwiftUI"])]),
         .executableTarget(name: "LensCoreTests", dependencies: ["LensCore"], path: "Tests/LensCoreTests")
     ]
 )

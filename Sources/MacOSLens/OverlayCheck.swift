@@ -51,6 +51,20 @@ enum OverlayCheck {
         try expect(panel.webView?.url == first, "the sheet shows the reused results")
         print("PASS Command-A reused the earlier results without another upload")
         print("PANEL_STATUS \(panel.statusLabel.stringValue)")
+
+        // Text mode never uploads, even with visual search allowed and a selection reported to the app.
+        view.setMode(.text)
+        let deadline = Date().addingTimeInterval(20)
+        while view.textLayout == nil && Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
+        let state = controller.searchState
+        let page = panel.webView?.url
+        view.selectAllText()
+        controller.selectionChanged(view, immediately: true)
+        try await Task.sleep(for: .seconds(2))
+        try expect(view.selectedText == "HELLO LENS 123", "Text mode recognized the fixture on this Mac")
+        try expect(controller.searchState == state && panel.webView?.url == page && !view.panelShown,
+                   "a Text-mode selection starts no upload and hides the visual results")
+        print("PASS Text mode selected \"HELLO LENS 123\" locally and uploaded nothing")
     }
 
     private static func results(_ controller: AppController, _ panel: ResultsPanel) async throws -> URL {

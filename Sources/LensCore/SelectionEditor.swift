@@ -26,7 +26,7 @@ public enum SelectionEditor {
     public static let minimumHandleSide: CGFloat = 16
 
     public static func target(at point: CGPoint, selection: CGRect?, bounds: CGRect,
-                              freehand: Bool = false) -> SelectionDrag {
+                              freehand: Bool = false, tolerance: CGFloat = tolerance) -> SelectionDrag {
         guard let rect = selection?.standardized, !rect.isNull, !rect.isEmpty else { return .draw }
         let reach = min(tolerance, max(4, min(rect.width, rect.height) / 4))
         for handle in SelectionHandle.allCases where handle.isCorner {

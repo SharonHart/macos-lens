@@ -20,6 +20,24 @@ public struct Shortcut: Equatable, Sendable {
     ]
     public static let standard = all[0]
 
+    /// Shortcuts that open the overlay straight in Text mode.
+    public static let textOptions = [
+        Shortcut(id: "command-shift-1", title: "Command + Shift + 1", keyCode: 18, modifiers: command | shift),
+        Shortcut(id: "control-shift-1", title: "Control + Shift + 1", keyCode: 18, modifiers: control | shift),
+        Shortcut(id: "control-option-t", title: "Control + Option + T", keyCode: 17, modifiers: control | option)
+    ]
+
+    /// The saved Text shortcut, or the first option that macOS isn't using and that differs from `other`.
+    public static func text(named id: String?, avoiding other: Shortcut,
+                            symbolicHotKeys: [String: Any]?) -> Shortcut {
+        if let saved = textOptions.first(where: { $0.id == id }) { return saved }
+        return textOptions.first { !$0.conflictsWithSystem(symbolicHotKeys) && !$0.overlaps(other) } ?? textOptions[0]
+    }
+
+    public func overlaps(_ other: Shortcut) -> Bool {
+        keyCode == other.keyCode && modifiers == other.modifiers
+    }
+
     public static func named(_ id: String?) -> Shortcut {
         all.first { $0.id == id } ?? standard
     }

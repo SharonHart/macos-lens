@@ -57,6 +57,19 @@ struct AppMain {
             }
             NSApplication.shared.setActivationPolicy(.accessory)
             NSApplication.shared.run()
+        } else if let index = CommandLine.arguments.firstIndex(of: "--handoff-check") {
+            let output = CommandLine.arguments.dropFirst(index + 1).first.map { URL(fileURLWithPath: $0) }
+            Task {
+                do {
+                    try await HandoffCheck.run(snapshot: output)
+                    exit(0)
+                } catch {
+                    fputs("Handoff check failed: \(error.localizedDescription)\n", stderr)
+                    exit(1)
+                }
+            }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.run()
         } else {
             let app = NSApplication.shared
             let delegate = AppController()

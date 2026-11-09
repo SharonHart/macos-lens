@@ -22,6 +22,33 @@ public enum OCR {
         }
     }
 
+    /// Lines and word boxes for selecting text in place, recognized on this Mac with Apple Vision. Uses the user's
+    /// preferred languages that Vision supports plus automatic language detection.
+    public static func recognizeWords(_ image: CGImage,
+                                      preferredLanguages: [String] = Locale.preferredLanguages) throws -> [RecognizedLine] {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        request.automaticallyDetectsLanguage = true
+        if let supported = try? request.supportedRecognitionLanguages() {
+            request.recognitionLanguages = TextLanguage.recognitionLanguages(preferred: preferredLanguages,
+                                                                             supported: supported)
+        }
+        try VNImageRequestHandler(cgImage: image).perform([request])
+        return (request.results ?? []).compactMap { observation in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            let text = candidate.string
+            let splits = TextSplitter.units(of: text)
+            guard !splits.isEmpty else { return nil }
+            let ranges = splits.map(\.range)
+            let found = ranges.map { try? candidate.boundingBox(for: $0)?.boundingBox }
+            let boxes = TextSplitter.repairedBoxes(found, lineBox: observation.boundingBox, text: text, ranges: ranges,
+                                                   rightToLeft: TextScript.isRightToLeft(text))
+            let units = zip(splits, boxes).map { TextUnit(text: String(text[$0.range]), separator: $0.separator, box: $1) }
+            return RecognizedLine(text: text, box: observation.boundingBox, units: units)
+        }
+    }
+
     /// Text lines and salient objects near a tap, found on this Mac with Apple Vision. This approximates
     /// Android's tap-to-select; it is not Google's segmentation. Boxes are normalized with a bottom-left origin.
     public static func tapCandidates(_ image: CGImage) throws -> (text: [CGRect], objects: [CGRect]) {
