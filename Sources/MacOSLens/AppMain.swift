@@ -57,6 +57,23 @@ struct AppMain {
             }
             NSApplication.shared.setActivationPolicy(.accessory)
             NSApplication.shared.run()
+        } else if let index = CommandLine.arguments.firstIndex(of: "--panel-aspect-check") {
+            let folder = URL(fileURLWithPath: CommandLine.arguments.dropFirst(index + 1).first ?? ".")
+            let label = CommandLine.arguments.dropFirst(index + 2).first ?? "after"
+            Task {
+                do {
+                    if label.hasPrefix("live") {
+                        try await PanelAspectCheck.live(folder: folder, label: label)
+                        exit(0)
+                    }
+                    exit(try await PanelAspectCheck.run(folder: folder, label: label, delays: [0, 400]) ? 0 : 1)
+                } catch {
+                    fputs("Panel aspect check failed: \(error.localizedDescription)\n", stderr)
+                    exit(1)
+                }
+            }
+            NSApplication.shared.setActivationPolicy(.accessory)
+            NSApplication.shared.run()
         } else if let index = CommandLine.arguments.firstIndex(of: "--handoff-check") {
             let output = CommandLine.arguments.dropFirst(index + 1).first.map { URL(fileURLWithPath: $0) }
             Task {

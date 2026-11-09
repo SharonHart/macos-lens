@@ -316,7 +316,8 @@ final class OverlayView: NSView {
         addSubview(closeCard)
 
         if let panel {
-            panel.isHidden = true
+            // Parked offscreen rather than hidden, so a page loading behind it is laid out at its real size.
+            panel.alphaValue = 0
             panel.onHide = { [weak self] in self?.hidePanel(byUser: true) }
             panel.onExpand = { [weak self] in self?.togglePanelExpanded() }
             panel.onResize = { [weak self] width, finished in self?.resizePanel(to: width, finished: finished) }
@@ -438,7 +439,7 @@ final class OverlayView: NSView {
             closeCard.frame = closeFrame
             closeButton.frame = closeCard.bounds
             layoutToast()
-            if let panel, panelShown, !panelAnimating, panelDragX == nil { panel.frame = panelFrame }
+            if panel != nil, !panelAnimating, panelDragX == nil { setPanelFrame(panelShown ? panelFrame : hiddenPanelFrame) }
             panel?.dockedLeft = panelDockedLeft
         }
         translateBar.frame = translateBarFrame
@@ -632,7 +633,7 @@ final class OverlayView: NSView {
         }
     }
 
-    private func animate(_ duration: TimeInterval, _ changes: @escaping () -> Void,
+    private func animate(_ duration: TimeInterval, implicit: Bool = true, _ changes: @escaping () -> Void,
                          completion: (() -> Void)? = nil) {
         guard !reduceMotion else {
             NSAnimationContext.beginGrouping()
@@ -645,9 +646,37 @@ final class OverlayView: NSView {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            context.allowsImplicitAnimation = true
+            context.allowsImplicitAnimation = implicit
             changes()
         }, completionHandler: completion)
+    }
+
+    /// Resizes the sheet at once and lays it out, so the results page is never stretched by an animation.
+    private func setPanelFrame(_ frame: CGRect) {
+        guard let panel, panel.frame != frame else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        panel.frame = frame
+        panel.layoutSubtreeIfNeeded()
+        CATransaction.commit()
+        NSAnimationContext.endGrouping()
+    }
+
+    /// Slides the sheet to `frame`: its size changes at once and only its position animates.
+    private func slidePanel(to frame: CGRect, duration: TimeInterval, completion: (() -> Void)? = nil) {
+        guard let panel else { return }
+        if panel.frame.size != frame.size {
+            setPanelFrame(CGRect(origin: CGPoint(x: panel.frame.minX, y: frame.minY), size: frame.size))
+        }
+        panelAnimating = true
+        animate(duration, implicit: false, { panel.animator().setFrameOrigin(frame.origin) }) { [weak self] in
+            self?.panelAnimating = false
+            completion?()
+            self?.needsLayout = true
+        }
     }
 
     // MARK: Results sheet
@@ -660,24 +689,16 @@ final class OverlayView: NSView {
             panel.dockedLeft = left
         }
         panelShown = true
-        panel.isHidden = false
+        setPanelFrame(reduceMotion ? panelFrame : hiddenPanelFrame)
         panel.alphaValue = 1
-        panel.frame = reduceMotion ? panelFrame : hiddenPanelFrame
-        panelAnimating = true
-        animate(0.28, { panel.animator().frame = self.panelFrame }) { [weak self] in
-            self?.panelAnimating = false
-            self?.needsLayout = true
-        }
+        slidePanel(to: panelFrame, duration: 0.28)
     }
 
     func hidePanel(byUser: Bool = false) {
         guard let panel, panelShown else { return }
         panelShown = false
-        panelAnimating = true
-        animate(0.24, { panel.animator().frame = self.hiddenPanelFrame }) { [weak self] in
-            guard let self else { return }
-            self.panelAnimating = false
-            if !self.panelShown { panel.isHidden = true }
+        slidePanel(to: hiddenPanelFrame, duration: 0.24) { [weak self] in
+            if self?.panelShown == false { panel.alphaValue = 0 }
         }
         if byUser { actions.panelVisibility(self, false) }
     }
@@ -686,8 +707,9 @@ final class OverlayView: NSView {
         panelExpanded.toggle()
         panel?.expanded = panelExpanded
         guard let panel, panelShown else { return }
+        // The sheet's frame steps through the animation; its page is placed at each step without a layer animation.
         panelAnimating = true
-        animate(0.22, { panel.animator().frame = self.panelFrame }) { [weak self] in
+        animate(0.22, implicit: false, { panel.animator().frame = self.panelFrame }) { [weak self] in
             self?.panelAnimating = false
             self?.needsLayout = true
         }
@@ -718,12 +740,8 @@ final class OverlayView: NSView {
     func dockPanel(left: Bool) {
         panelDockedLeft = left
         panel?.dockedLeft = left
-        guard let panel, panelShown else { return }
-        panelAnimating = true
-        animate(0.22, { panel.animator().frame = self.panelFrame }) { [weak self] in
-            self?.panelAnimating = false
-            self?.needsLayout = true
-        }
+        guard panel != nil, panelShown else { return }
+        slidePanel(to: panelFrame, duration: 0.22)
     }
 
     /// Moves the sheet to the other side when it covers a smaller selection that would fit there.
@@ -752,7 +770,7 @@ final class OverlayView: NSView {
         panel?.passThrough = dragging
         let controls: [NSView] = [bar, translateCard, closeCard]
         animate(0.15, {
-            self.panel?.animator().alphaValue = dragging ? 0.25 : 1
+            self.panel?.animator().alphaValue = dragging ? 0.25 : (self.panelShown ? 1 : 0)
             for view in controls where view.superview != nil { view.animator().alphaValue = dragging ? 0.45 : 1 }
         })
     }
@@ -1653,7 +1671,7 @@ extension OverlayView {
         }
         origin.x = min(max(origin.x, bounds.minX + 12), bounds.maxX - 12 - size.width)
         var frame = CGRect(origin: origin, size: size)
-        if panelShown, let panel, !panel.isHidden, frame.intersects(panelFrame) {
+        if panelShown, let panel, panel.alphaValue > 0, frame.intersects(panelFrame) {
             frame.origin.x = panelDockedLeft ? panelFrame.maxX + gap : panelFrame.minX - gap - size.width
             frame.origin.x = max(frame.origin.x, bounds.minX + 12)
         }

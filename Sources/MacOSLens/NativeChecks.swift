@@ -133,13 +133,14 @@ enum NativeChecks {
             check(view.closeFrame.minX < 40 && view.closeFrame.maxY > bounds.maxY - 32 - 60 &&
                   view.closeCard.superview === view, "an ✕ close button sits at the top left, below the menu bar")
             check(!buttons(in: view).contains { ["Draw", "Full screen"].contains($0.title) } &&
-                  !view.panelShown && panel.isHidden && view.actionChip.isHidden && view.selectTextChip.isHidden,
+                  !view.panelShown && panel.alphaValue == 0 && !panel.frame.intersects(bounds) &&
+                  view.actionChip.isHidden && view.selectTextChip.isHidden,
                   "there is no toolbar, text menu or results sheet until they are needed")
 
             // Results sheet: slides in on the right without covering the selection handles.
             view.revealPanel()
             view.layoutSubtreeIfNeeded()
-            check(view.panelShown && !panel.isHidden && near(panel.frame, view.panelFrame) &&
+            check(view.panelShown && panel.alphaValue == 1 && near(panel.frame, view.panelFrame) &&
                   panel.frame.maxX < bounds.maxX - 10 && panel.frame.minY > view.barFrame.maxY,
                   "the results sheet appears as a floating card on the right, above the search bar")
             check(view.panelFrame.width == PanelSizing.defaultWidth(screenWidth: bounds.width) &&
@@ -409,6 +410,7 @@ enum NativeChecks {
                            midDrag: { midDrag = $0 }, key: key, save: save, board: board, speaker: speaker,
                            suite: suite)
             try markChecks(check: check, folder: snapshot?.deletingLastPathComponent())
+            try panelLoadChecks(check: check, spin: spin)
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -416,6 +418,139 @@ enum NativeChecks {
         check(NSPasteboard.general.changeCount == clipboard, "the user's clipboard was never touched")
         print("Native checks: \(failures) failures; no screen capture, upload or browser launch.")
         return failures == 0
+    }
+
+    // MARK: - Results sheet loading
+
+    /// The sheet sizes its web view before a page loads, shows the crop at its true shape until the page has laid
+    /// out, and never animates the web view's size. Pages come from a local scheme, so nothing is uploaded.
+    private static func panelLoadChecks(check: (Bool, String) -> Void,
+                                        spin: (() -> Bool, TimeInterval) -> Bool) throws {
+        let scheme = PanelAspectCheck.scheme
+        let handler = FixtureScheme()
+        handler.delay = 5000
+        ResultsPanel.configureForChecks = { configuration in
+            configuration.websiteDataStore = .nonPersistent()
+            configuration.setURLSchemeHandler(handler, forURLScheme: scheme)
+        }
+        ResultsPanel.checkScheme = scheme
+        defer {
+            ResultsPanel.configureForChecks = nil
+            ResultsPanel.checkScheme = nil
+            OverlayView.animates = false
+        }
+        let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
+        let window = NSWindow(contentRect: size, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let view = OverlayView(frame: size, image: try fixture(), displayIndex: 0, mode: .search, topInset: 32,
+                               selected: true, controls: true, actions: OverlayActions())
+        window.contentView = view
+        view.layoutSubtreeIfNeeded()
+        guard let panel = view.panel else { return check(false, "the overlay has a results sheet") }
+        check(!view.panelShown && !panel.isHidden && panel.alphaValue == 0 && !panel.frame.intersects(view.bounds) &&
+              panel.frame.size == view.panelFrame.size,
+              "the hidden sheet waits offscreen, transparent but not hidden, already at its final size")
+
+        let crop = try PanelAspectCheck.picture(width: 700, height: 500, pattern: true)
+        let request = URLRequest(url: URL(string: "\(scheme)://results/page")!)
+        var search = Task { try? await panel.search(request, preview: crop) }
+        let started = spin({ panel.frameAtLoad != nil }, 2)
+        let body = panel.bodyFrame
+        check(started && panel.frameAtLoad == body && body.width >= 100 && body.height >= 100 &&
+              panel.webView?.frame == body,
+              "a search starts loading in a web view already at the sheet's final body size " +
+              "(\(Int(body.width))×\(Int(body.height)) pt), before the sheet is revealed")
+        guard let web = panel.webView else { return }
+        let preview = panel.previewView.frame
+        let ratio = preview.height > 0 ? preview.width / preview.height / (700.0 / 500.0) : 0
+        check(panel.covering && !panel.previewView.isHidden && panel.previewView.alphaValue == 1 &&
+              !web.isHidden && web.alphaValue == 0 && abs(ratio - 1) <= PanelAspectCheck.tolerance &&
+              body.contains(preview) && web.hitTest(NSPoint(x: web.frame.midX, y: web.frame.midY)) == nil,
+              "from the first paint the sheet shows the crop at its true aspect ratio over a transparent, " +
+              "still-loading page (aspect error \(String(format: "%.1f", abs(ratio - 1) * 100))%)")
+        view.revealPanel()
+        view.layoutSubtreeIfNeeded()
+        check(panel.bodyFrame == body && web.frame == body,
+              "revealing the sheet keeps the size the page was loaded at")
+
+        // Slide-in, expand and docking: sample every frame for a changed web view size or a size animation.
+        OverlayView.animates = true
+        var steady = true, keys = Set<String>(), origins = Set<CGFloat>()
+        func watch(_ seconds: TimeInterval, sameSize: Bool) {
+            _ = spin({
+                if sameSize, panel.frame.size != view.panelFrame.size { steady = false }
+                if web.frame != panel.bodyFrame || web.frame.size != panel.bodyFrame.size { steady = false }
+                keys.formUnion(web.layer?.animationKeys() ?? [])
+                origins.insert(panel.layer?.presentation()?.position.x ?? panel.frame.minX)
+                return false
+            }, seconds)
+        }
+        let motion = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        view.hidePanel()
+        watch(0.4, sameSize: true)
+        view.revealPanel()
+        watch(0.45, sameSize: true)
+        view.dockPanel(left: true)
+        watch(0.4, sameSize: true)
+        view.dockPanel(left: false)
+        watch(0.4, sameSize: true)
+        let slid = origins.count > 3 || !motion
+        panel.expandButton.performClick(nil)
+        watch(0.4, sameSize: false)
+        let expanded = web.frame == panel.bodyFrame && panel.frame.size == view.panelFrame.size
+        panel.expandButton.performClick(nil)
+        watch(0.4, sameSize: false)
+        OverlayView.animates = false
+        let sizeKeys = keys.filter { ["bounds", "bounds.size", "transform", "frameSize", "contentsScale"].contains($0) }
+        check(steady && slid && expanded && sizeKeys.isEmpty,
+              "hiding, revealing and docking move only the sheet's position; while expanding, the page is placed " +
+              "at the sheet's size on every frame; the web view's size is never animated " +
+              "(\(origins.count) slide positions sampled)")
+
+        search.cancel()
+        check(spin({ !panel.covering }, 2) && web.alphaValue == 1 && panel.previewView.isHidden,
+              "cancelling a search removes the crop and shows the earlier page")
+
+        handler.delay = 0
+        let begun = Date()
+        search = Task { try? await panel.search(request, preview: crop) }
+        let covered = spin({ panel.covering }, 1)
+        let settled = spin({ !panel.covering }, ResultsPanel.settleTimeout + 2)
+        let waited = Date().timeIntervalSince(begun)
+        var stretch: Double?
+        Task { stretch = Double(await PanelCheck.evaluate(web, PanelAspectCheck.stretchScript)) }
+        _ = spin({ stretch != nil }, 3)
+        check(covered && settled && waited < ResultsPanel.settleTimeout - 1 && web.alphaValue == 1 &&
+              stretch.map { abs($0 - 1) <= Double(PanelAspectCheck.tolerance) } == true,
+              "the crop gives way only once the page shows the image at its own shape " +
+              "(after \(String(format: "%.1f", waited)) s, stretch \(stretch.map { String(format: "%.1f", abs($0 - 1) * 100) } ?? "?")%)")
+        search.cancel()
+
+        // Google commits an image-less results page that's already complete, then replaces it with the real one.
+        let hop = URLRequest(url: URL(string: "\(scheme)://results/hop")!)
+        let hopped = Date()
+        search = Task { try? await panel.search(hop, preview: crop) }
+        var early = false
+        let hopCovered = spin({ panel.covering }, 1)
+        let hopSettled = spin({
+            if !panel.covering, web.url?.lastPathComponent == "hop" { early = true }
+            return !panel.covering
+        }, ResultsPanel.settleTimeout + 2)
+        let hopWait = Date().timeIntervalSince(hopped)
+        stretch = nil
+        Task { stretch = Double(await PanelCheck.evaluate(web, PanelAspectCheck.stretchScript)) }
+        _ = spin({ stretch != nil }, 3)
+        check(hopCovered && hopSettled && !early && web.url?.lastPathComponent == "page" &&
+              hopWait < ResultsPanel.settleTimeout - 1 &&
+              stretch.map { abs($0 - 1) <= Double(PanelAspectCheck.tolerance) } == true,
+              "a complete results page without the image doesn't end the crop; the page that replaces it is " +
+              "shown once its image has its own shape (after \(String(format: "%.1f", hopWait)) s)")
+        search.cancel()
+
+        panel.showPage(URL(string: "about:blank")!, title: "Page")
+        check(!panel.covering && panel.previewView.isHidden && web.alphaValue == 1,
+              "ordinary pages opened in the sheet are shown directly, never covered")
     }
 
     // MARK: - Text mode
@@ -944,7 +1079,7 @@ enum NativeChecks {
 }
 
 /// RGBA pixels of an image, addressed from the bottom left like AppKit and Core Graphics.
-private struct Bitmap {
+struct Bitmap {
     let width: Int
     let height: Int
     private let bytesPerRow: Int

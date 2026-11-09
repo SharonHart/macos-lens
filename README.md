@@ -92,6 +92,7 @@ Requires macOS 14 or newer and the Xcode Command Line Tools with Swift 5.10 or n
 swift run LensCoreTests
 swift build
 .build/debug/MacOSLens --self-test-native [snapshot.png]   # offscreen overlay checks; optional renders
+.build/debug/MacOSLens --panel-aspect-check <folder>       # offscreen results-sheet image shape, sample strips
 bash scripts/build-app.sh
 open "dist/macOS Lens.app"
 ```
@@ -102,6 +103,7 @@ to Google Lens's undocumented upload endpoint:
 ```sh
 .build/debug/MacOSLens --integration-fixture
 .build/debug/MacOSLens --panel-check
+LENS_VISIBLE=1 .build/debug/MacOSLens --panel-aspect-check <folder> live   # nearly transparent window
 .build/debug/MacOSLens --overlay-check   # briefly shows the overlay on the main display
 ```
 

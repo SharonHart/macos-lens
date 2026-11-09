@@ -60,6 +60,18 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     private(set) var webView: WKWebView?
     private(set) var resultURL: URL?
     private(set) var loadedURL: URL?
+    /// The web view's frame when the latest page load started.
+    private(set) var frameAtLoad: CGRect?
+    /// The selected area, shown at its true shape while Google's results page is still laying out its image.
+    var preview: CGImage?
+    let previewView = NSImageView()
+    /// Whether the crop is covering a results page that hasn't settled yet.
+    private(set) var covering = false
+    private var settleID = 0
+    /// How long to wait for Google's page to size its image before showing it anyway.
+    static var settleTimeout: TimeInterval = 8
+    /// How long a complete page without a large image must stay that way before it counts as settled.
+    static let quietDelay: TimeInterval = 1.5
     private var pageNote: String?
     private let dataStore: WKWebsiteDataStore
     private var pending: (id: Int, navigation: WKNavigation?, continuation: CheckedContinuation<URL, Error>)?
@@ -97,7 +109,16 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         placeholder.font = .systemFont(ofSize: 14)
         buildDisclosure()
         buildConfirmation()
-        for view in [header, messageLabel, placeholder, disclosure, confirmation] { content.addSubview(view) }
+        previewView.imageScaling = .scaleProportionallyUpOrDown
+        previewView.wantsLayer = true
+        previewView.layer?.cornerRadius = 12
+        previewView.layer?.cornerCurve = .continuous
+        previewView.layer?.masksToBounds = true
+        previewView.isHidden = true
+        previewView.setAccessibilityLabel("Selected area")
+        for view in [header, messageLabel, placeholder, disclosure, confirmation, previewView] {
+            content.addSubview(view)
+        }
         confirmation.isHidden = true
         divider.onDrag = { [weak self] delta, finished in
             guard let self else { return }
@@ -269,12 +290,46 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
             messageLabel.frame = NSRect(x: 18, y: top - size.height, width: width - 36, height: size.height)
             top -= size.height + 8
         }
-        let body = NSRect(x: 8, y: 8, width: width - 16, height: max(0, top - 8))
-        webView?.frame = body
+        let body = bodyFrame
+        if let webView { Self.place(webView, body) }
+        if let preview { Self.place(previewView, Self.previewFrame(for: preview, in: body)) }
         placeholder.frame = NSRect(x: 28, y: body.midY - 40, width: width - 56, height: 80)
         disclosure.frame = NSRect(x: 18, y: 8, width: width - 36, height: max(0, top - 16))
         confirmation.frame = NSRect(x: 18, y: 12, width: width - 36, height: max(0, top - 16))
         divider.frame = NSRect(x: dockedLeft ? width - 8 : 0, y: 0, width: 8, height: height - headerHeight)
+    }
+
+    /// Where the results page sits: below the header and any error message.
+    var bodyFrame: CGRect {
+        var top = bounds.height - 64
+        if !messageLabel.isHidden {
+            top -= messageLabel.sizeThatFits(NSSize(width: bounds.width - 36, height: 200)).height + 8
+        }
+        return NSRect(x: 8, y: 8, width: bounds.width - 16, height: max(0, top - 8))
+    }
+
+    /// The crop fitted to the top of the results area at its own aspect ratio, never stretched.
+    static func previewFrame(for image: CGImage, in body: CGRect) -> CGRect {
+        let box = body.insetBy(dx: 16, dy: 16)
+        let height = min(box.height, max(80, body.height * 0.58))
+        guard image.width > 0, image.height > 0, box.width > 0, height > 0 else { return .zero }
+        let size = CGSize(width: image.width, height: image.height)
+        let scale = min(box.width / size.width, height / size.height, 2)
+        let width = (size.width * scale).rounded(), fitted = (size.height * scale).rounded()
+        return CGRect(x: (box.midX - width / 2).rounded(), y: box.maxY - fitted, width: width, height: fitted)
+    }
+
+    /// Sets a frame at once: the results page must never be stretched by an animation of its size.
+    private static func place(_ view: NSView, _ frame: CGRect) {
+        guard view.frame != frame else { return }
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        view.frame = frame
+        CATransaction.commit()
+        NSAnimationContext.endGrouping()
     }
 
     // MARK: Modes
@@ -291,13 +346,15 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         guard allowed else {
             statusLabel.stringValue = "Nothing has been uploaded."
             placeholder.isHidden = true
+            uncover(animated: false)
             webView?.isHidden = true
             openButton.isEnabled = false
             needsLayout = true
             return
         }
-        webView?.isHidden = loadedURL == nil
-        placeholder.isHidden = loadedURL != nil
+        let loading = loadedURL != nil || pending != nil || covering
+        webView?.isHidden = !loading
+        placeholder.isHidden = loading
         placeholder.stringValue = "Circle, highlight or tap what you want to search."
         switch state {
         case .idle:
@@ -357,6 +414,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         disclosure.isHidden = true
         placeholder.isHidden = true
         messageLabel.isHidden = true
+        uncover(animated: false)
         webView?.isHidden = true
         openButton.isEnabled = false
         needsLayout = true
@@ -408,11 +466,15 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 
     /// Uploads like a browser form so the results page and its image thumbnail share this sheet's session.
     /// Returns the committed results URL; cancelling the calling task stops the upload.
-    func search(_ request: URLRequest) async throws -> URL {
-        let web = webView ?? makeWebView()
+    func search(_ request: URLRequest, preview: CGImage? = nil) async throws -> URL {
+        if let preview { self.preview = preview }
+        let web = prepareWebView()
         finish(pending?.id, with: .failure(CancellationError()))
         searchCount += 1
         let id = searchCount
+        web.isHidden = false
+        placeholder.isHidden = true
+        cover()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 guard !Task.isCancelled else {
@@ -434,6 +496,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     func stopSearch(_ id: Int? = nil) {
         guard let pending, id == nil || pending.id == id else { return }
         webView?.stopLoading()
+        uncover(animated: false)
         finish(pending.id, with: .failure(CancellationError()))
     }
 
@@ -449,16 +512,126 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     }
 
     func load(_ url: URL) {
-        let web = webView ?? makeWebView()
+        let web = prepareWebView()
         loadedURL = url
         pageNote = nil
         pageAtTop = true
         web.isHidden = false
         placeholder.isHidden = true
+        // Google redraws its image viewer for every results page, so cover each one until it settles.
+        if mode == .lens, LensUpload.isResult(url) { cover() } else { uncover(animated: false) }
         setBusy(true)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.stringValue = "Loading results…"
         web.load(URLRequest(url: url))
+    }
+
+    /// Lays the sheet out and gives the web view its final size before any page starts loading, because
+    /// Google sizes its results for the viewport it loads in.
+    private func prepareWebView() -> WKWebView {
+        if bounds.width < 100 || bounds.height < 100 {
+            superview?.needsLayout = true
+            superview?.layoutSubtreeIfNeeded()
+        }
+        layoutSubtreeIfNeeded()
+        let web = webView ?? makeWebView()
+        Self.place(web, bodyFrame)
+        frameAtLoad = web.frame
+        return web
+    }
+
+    // MARK: Covering an unsettled page
+
+    /// Shows the selected area at its true aspect ratio in place of the page until Google has laid it out.
+    private func cover() {
+        guard mode == .lens, let preview, let web = webView else { return uncover(animated: false) }
+        settleID += 1
+        covering = true
+        previewView.image = NSImage(cgImage: preview, size: NSSize(width: preview.width, height: preview.height))
+        Self.place(previewView, Self.previewFrame(for: preview, in: bodyFrame))
+        previewView.isHidden = false
+        previewView.alphaValue = 1
+        // Transparent rather than hidden, so WebKit keeps laying the page out at full speed.
+        web.alphaValue = 0
+        (web as? PanelWebView)?.blocksInput = true
+    }
+
+    /// Crossfades from the crop to the results page.
+    private func uncover(animated: Bool) {
+        settleID += 1
+        guard covering else { return }
+        covering = false
+        let web = webView
+        (web as? PanelWebView)?.blocksInput = false
+        let fades = animated && OverlayView.animates && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard fades else {
+            web?.alphaValue = 1
+            previewView.alphaValue = 0
+            previewView.isHidden = true
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            web?.animator().alphaValue = 1
+            previewView.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            guard let self, !self.covering else { return }
+            self.previewView.isHidden = true
+        })
+    }
+
+    /// Waits until Google's image viewer shows the image at its natural aspect ratio, then reveals the page.
+    private func watchSettling(_ web: WKWebView) {
+        settleID += 1
+        let id = settleID
+        let deadline = Date().addingTimeInterval(Self.settleTimeout)
+        Task { @MainActor [weak self, weak web] in
+            while true {
+                guard let self, let web, self.covering, self.settleID == id else { return }
+                if Date() >= deadline { break }
+                if await Self.isSettled(web) { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard let self, self.covering, self.settleID == id else { return }
+            self.uncover(animated: true)
+        }
+    }
+
+    /// Google's server-rendered viewer draws the image with `object-fit: fill` in a box that ignores the
+    /// image's shape until its own script resizes the box, so wait for that box to match the image.
+    /// Google first commits a short-lived, image-less results document, so a page without a large image
+    /// only counts as settled once it has stayed complete and image-less for a while.
+    static let settleScript = """
+    (() => {
+      if (document.readyState === 'loading') return false;
+      let best = null, area = 0, loading = false;
+      for (const img of document.images) {
+        const r = img.getBoundingClientRect();
+        if (r.width < 120 || r.height < 80 || r.top > 500 || r.bottom <= 0) continue;
+        if (!img.naturalWidth || !img.naturalHeight) {
+          if (img.currentSrc || img.getAttribute('src')) loading = true;
+          continue;
+        }
+        if (r.width * r.height > area) { area = r.width * r.height; best = { img, r }; }
+      }
+      if (!best) {
+        if (loading || document.readyState !== 'complete') { window.__lensQuietSince = undefined; return false; }
+        const now = performance.now();
+        if (window.__lensQuietSince === undefined) window.__lensQuietSince = now;
+        return now - window.__lensQuietSince >= \(Int(quietDelay * 1000));
+      }
+      if (getComputedStyle(best.img).objectFit !== 'fill') return true;
+      const shown = best.r.width / best.r.height, natural = best.img.naturalWidth / best.img.naturalHeight;
+      return Math.abs(shown / natural - 1) <= 0.02;
+    })()
+    """
+
+    static func isSettled(_ web: WKWebView) async -> Bool {
+        await withCheckedContinuation { continuation in
+            web.evaluateJavaScript(settleScript, in: nil, in: .defaultClient) { result in
+                continuation.resume(returning: (try? result.get()) as? Bool ?? false)
+            }
+        }
     }
 
     private static let topScript = """
@@ -478,15 +651,20 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     })();
     """
 
+    /// Lets offscreen checks serve generated pages from a local scheme; never set by the app.
+    static var configureForChecks: ((WKWebViewConfiguration) -> Void)?
+    static var checkScheme: String?
+
     private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = dataStore
+        Self.configureForChecks?(configuration)
         configuration.applicationNameForUserAgent = "Version/18.0 Safari/605.1.15"
         let controller = configuration.userContentController
         controller.addUserScript(WKUserScript(source: Self.topScript, injectionTime: .atDocumentEnd,
                                               forMainFrameOnly: true, in: .defaultClient))
         controller.add(ScrollReporter(panel: self), contentWorld: .defaultClient, name: "lensTop")
-        let web = PanelWebView(frame: .zero, configuration: configuration)
+        let web = PanelWebView(frame: bodyFrame, configuration: configuration)
         web.onScroll = { [weak self] event in self?.pageScrolled(event) }
         web.navigationDelegate = self
         web.uiDelegate = self
@@ -494,7 +672,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
         web.wantsLayer = true
         web.layer?.cornerRadius = 12
         web.layer?.masksToBounds = true
-        content.addSubview(web, positioned: .below, relativeTo: divider)
+        content.addSubview(web, positioned: .below, relativeTo: previewView)
         webView = web
         needsLayout = true
         return web
@@ -560,7 +738,8 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         let scheme = navigationAction.request.url?.scheme?.lowercased() ?? ""
-        decisionHandler(["http", "https", "about", "data", "blob"].contains(scheme) ? .allow : .cancel)
+        let allowed = ["http", "https", "about", "data", "blob"].contains(scheme) || scheme == Self.checkScheme
+        decisionHandler(allowed ? .allow : .cancel)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
@@ -586,6 +765,11 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
             pageNote = nil
         }
         if let pageNote { show(note: pageNote) }
+        // Consent, sign-in and robot checks need the user, so show them at once.
+        if covering {
+            let result = LensUpload.isResult(url) || (Self.checkScheme != nil && url.scheme == Self.checkScheme)
+            if pageNote == nil, result { watchSettling(webView) } else { uncover(animated: false) }
+        }
         if isPending(navigation), let id = pending?.id {
             loadedURL = url
             do {
@@ -614,6 +798,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if isPending(navigation), let id = pending?.id {
             setBusy(false)
+            uncover(animated: false)
             finish(id, with: .failure(isCancellation(error) ? CancellationError() : error))
         } else {
             failed(error)
@@ -622,6 +807,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         let error = LensError.message("The results page stopped unexpectedly. Press Return to search again.")
+        uncover(animated: false)
         finish(pending?.id, with: .failure(error))
         failed(error)
     }
@@ -632,6 +818,7 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 
     private func failed(_ error: Error) {
         if isCancellation(error) { return }
+        uncover(animated: false)
         setBusy(false)
         showError("The results page could not load.", detail: error.localizedDescription)
     }
@@ -654,6 +841,10 @@ final class ResultsPanel: NSView, WKNavigationDelegate, WKUIDelegate {
 /// The results web view, which also reports scroll gestures so pulling the page down can close the sheet.
 final class PanelWebView: WKWebView {
     var onScroll: ((NSEvent) -> Void)?
+    /// While the crop covers the page, clicks must not reach the invisible page underneath.
+    var blocksInput = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? { blocksInput ? nil : super.hitTest(point) }
 
     override func scrollWheel(with event: NSEvent) {
         super.scrollWheel(with: event)

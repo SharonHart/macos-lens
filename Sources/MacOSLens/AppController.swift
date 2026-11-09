@@ -325,8 +325,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             target.showWarning("Select an area at least \(Int(Selection.minimumSide)) points wide and high")
             return
         }
+        // Shown at its true shape while Google's results page lays out, including cached and refined results.
+        panel.preview = crop
         liveSearch.schedule(key, immediately: immediately) {
-            try await panel.search(LensUpload.request(for: crop))
+            try await panel.search(LensUpload.request(for: crop), preview: crop)
         }
         // A cached result doesn't change the state, but the sheet may be showing a text page.
         refreshPanel()
