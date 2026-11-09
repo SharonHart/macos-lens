@@ -295,7 +295,7 @@ print_shortcuts() {
     search="$(shortcut_titles all | head -n 1)"
     text="$(shortcut_titles textOptions | head -n 1)"
     fallbacks="$(shortcut_titles textOptions | sed 1d | paste -sd '/' - | sed 's|/| or |g')"
-    printf '\nKeyboard shortcuts (change them in macOS Lens Settings):\n'
+    printf '\nKeyboard shortcuts (change them, or set them to None, in macOS Lens Settings):\n'
     printf '  Search or select text:  %s\n' "${search:-Command + Shift + 2}"
     printf '  Select all text:        %s (uses %s if macOS already has that one)\n' \
         "${text:-Command + Shift + 1}" "${fallbacks:-Control + Shift + 1 or Control + Option + T}"

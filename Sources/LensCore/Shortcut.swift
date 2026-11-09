@@ -28,10 +28,12 @@ public struct Shortcut: Equatable, Sendable {
     ]
 
     /// The saved Text shortcut, or the first option that macOS isn't using and that differs from `other`.
-    public static func text(named id: String?, avoiding other: Shortcut,
+    public static func text(named id: String?, avoiding other: Shortcut?,
                             symbolicHotKeys: [String: Any]?) -> Shortcut {
         if let saved = textOptions.first(where: { $0.id == id }) { return saved }
-        return textOptions.first { !$0.conflictsWithSystem(symbolicHotKeys) && !$0.overlaps(other) } ?? textOptions[0]
+        return textOptions.first { option in
+            !option.conflictsWithSystem(symbolicHotKeys) && !(other.map(option.overlaps) ?? false)
+        } ?? textOptions[0]
     }
 
     public func overlaps(_ other: Shortcut) -> Bool {
@@ -67,4 +69,30 @@ public struct Shortcut: Equatable, Sendable {
         }
         return active.values.contains { $0.keyCode == keyCode && $0.modifiers == modifiers }
     }
+}
+
+/// The two saved shortcuts. Either can be None, saved as `noneID`: nothing is registered for it, and the other
+/// shortcut's default no longer has to avoid it.
+public struct ShortcutSettings {
+    public static let noneID = "none"
+    public static let searchKey = "shortcutID"
+    public static let textKey = "textShortcutID"
+
+    private let defaults: UserDefaults
+
+    public init(_ defaults: UserDefaults) { self.defaults = defaults }
+
+    /// Command + Shift + 2 until the user picks another shortcut or None.
+    public var search: Shortcut? {
+        let id = defaults.string(forKey: Self.searchKey)
+        return id == Self.noneID ? nil : Shortcut.named(id)
+    }
+
+    public func text(symbolicHotKeys: [String: Any]?) -> Shortcut? {
+        let id = defaults.string(forKey: Self.textKey)
+        return id == Self.noneID ? nil : Shortcut.text(named: id, avoiding: search, symbolicHotKeys: symbolicHotKeys)
+    }
+
+    public func setSearch(_ shortcut: Shortcut?) { defaults.set(shortcut?.id ?? Self.noneID, forKey: Self.searchKey) }
+    public func setText(_ shortcut: Shortcut?) { defaults.set(shortcut?.id ?? Self.noneID, forKey: Self.textKey) }
 }

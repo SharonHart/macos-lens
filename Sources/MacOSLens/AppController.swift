@@ -55,11 +55,9 @@ final class AppController: NSObject, NSApplicationDelegate {
     private static let searchHotKey: UInt32 = 1
     private static let textHotKey: UInt32 = 2
 
-    private var shortcut: Shortcut { Shortcut.named(defaults.string(forKey: "shortcutID")) }
-    private var textShortcut: Shortcut {
-        Shortcut.text(named: defaults.string(forKey: "textShortcutID"), avoiding: shortcut,
-                      symbolicHotKeys: systemHotKeys())
-    }
+    /// Either shortcut can be None; the menu-bar icon, its menu and the launcher still open the lens.
+    private var shortcut: Shortcut? { ShortcutSettings(defaults).search }
+    private var textShortcut: Shortcut? { ShortcutSettings(defaults).text(symbolicHotKeys: systemHotKeys()) }
 
     private func systemHotKeys() -> [String: Any]? {
         CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString,
@@ -148,9 +146,22 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Two global shortcuts open the same view: one ready to circle or select anything, the other with all text
     /// already selected.
-    private func registerShortcuts() {
+    /// The hotkeys `registerShortcuts` registers: one per shortcut that isn't None.
+    var plannedHotKeys: [(shortcut: Shortcut, id: UInt32, purpose: String)] {
+        [(shortcut, Self.searchHotKey, "search"), (textShortcut, Self.textHotKey, "text")].compactMap { item in
+            item.0.map { (shortcut: $0, id: item.1, purpose: item.2) }
+        }
+    }
+
+    var registeredHotKeyCount: Int { hotKeys.count }
+
+    func registerShortcuts() {
         hotKeys.forEach { UnregisterEventHotKey($0) }
         hotKeys.removeAll()
+        let planned = plannedHotKeys
+        status?.button?.toolTip = statusToolTip
+        setLauncherShortcutText()
+        guard !planned.isEmpty else { return }
         if eventHandler == nil {
             var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
             let install = InstallEventHandler(GetApplicationEventTarget(), { _, event, userData in
@@ -168,12 +179,8 @@ final class AppController: NSObject, NSApplicationDelegate {
                 return
             }
         }
-        let search = shortcut, text = textShortcut
-        status.button?.toolTip = "Search screen (\(search.title)) · select all text (\(text.title)); " +
-                                 "right-click for more"
-        setLauncherShortcutText()
         var problems: [String] = []
-        for (shortcut, id, purpose) in [(search, Self.searchHotKey, "search"), (text, Self.textHotKey, "text")] {
+        for (shortcut, id, purpose) in planned {
             if shortcut.conflictsWithSystem(systemHotKeys()) {
                 problems.append("\(shortcut.title) (\(purpose)) is already used by a macOS keyboard shortcut.")
                 continue
@@ -205,7 +212,18 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private var launcherShortcutText: String {
-        "\(shortcut.title): search the screen · \(textShortcut.title): select all text"
+        switch (shortcut, textShortcut) {
+        case let (search?, text?): return "\(search.title): search the screen · \(text.title): select all text"
+        case let (search?, nil): return "\(search.title): search the screen · no Text shortcut"
+        case let (nil, text?): return "No Search shortcut · \(text.title): select all text"
+        case (nil, nil): return "No keyboard shortcuts: use the menu-bar Lens icon or the buttons below"
+        }
+    }
+
+    private var statusToolTip: String {
+        let search = shortcut.map { "Search screen (\($0.title))" } ?? "Click to search the screen"
+        let text = textShortcut.map { " · select all text (\($0.title))" } ?? ""
+        return search + text + "; right-click for more"
     }
 
     // MARK: Capture
@@ -736,7 +754,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Builds the onboarding window once. The native checks drive it offscreen.
     func makeScreenRecordingOnboarding() -> ScreenRecordingOnboarding {
         if let onboarding { return onboarding }
-        let made = ScreenRecordingOnboarding(access: screenAccess, shortcutTitle: { [weak self] in self?.shortcut.title },
+        let made = ScreenRecordingOnboarding(access: screenAccess, shortcutTitle: { [weak self] in self?.shortcut?.title },
                                              relaunch: { [weak self] in self?.relaunch() })
         onboarding = made
         return made
@@ -885,16 +903,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         form.add(.item(browser), fixed(NSButton(title: "Choose…", target: self, action: #selector(chooseBrowser)), 110),
                  fixed(NSButton(title: "Use default", target: self, action: #selector(useDefaultBrowser)), 110), gap: 6)
         let systemKeys = systemHotKeys()
-        func popup(_ title: String, _ options: [Shortcut], selected: Shortcut, action: Selector) -> FormView.Item {
+        func popup(_ title: String, _ options: [Shortcut], selected: Shortcut?, action: Selector) -> FormView.Item {
             let popup = NSPopUpButton()
             popup.autoenablesItems = false
+            popup.addItem(withTitle: "None")
+            popup.lastItem?.representedObject = ShortcutSettings.noneID
+            popup.menu?.addItem(.separator())
             for option in options {
                 let used = option.conflictsWithSystem(systemKeys)
                 popup.addItem(withTitle: used ? "\(option.title) — used by macOS" : option.title)
                 popup.lastItem?.representedObject = option.id
                 popup.lastItem?.isEnabled = !used
             }
-            popup.selectItem(at: options.firstIndex(of: selected) ?? 0)
+            popup.selectItem(at: max(0, popup.indexOfItem(withRepresentedObject: selected?.id ?? ShortcutSettings.noneID)))
             popup.target = self
             popup.action = action
             // Wide enough for any title it can show; the open menu shows unavailable shortcuts in full anyway.
@@ -931,13 +952,13 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     @objc private func changeShortcut(_ sender: NSPopUpButton) {
         guard let id = sender.selectedItem?.representedObject as? String else { return }
-        defaults.set(id, forKey: "shortcutID")
+        ShortcutSettings(defaults).setSearch(id == ShortcutSettings.noneID ? nil : Shortcut.named(id))
         registerShortcuts()
     }
 
     @objc private func changeTextShortcut(_ sender: NSPopUpButton) {
         guard let id = sender.selectedItem?.representedObject as? String else { return }
-        defaults.set(id, forKey: "textShortcutID")
+        ShortcutSettings(defaults).setText(Shortcut.textOptions.first { $0.id == id })
         registerShortcuts()
     }
 

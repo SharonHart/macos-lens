@@ -844,6 +844,37 @@ extension LensCoreTests {
                        "never the same keys as the Search shortcut")
     }
 
+    func testShortcutsCanBeNone() throws {
+        let name = "dev.macos-lens.tests.shortcuts"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defaults.removePersistentDomain(forName: name)
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = ShortcutSettings(defaults)
+        XCTAssertEqual(settings.search, .standard, "a fresh install keeps Command + Shift + 2")
+        XCTAssertEqual(settings.text(symbolicHotKeys: nil)?.id, "command-shift-1", "and Command + Shift + 1")
+        XCTAssertFalse((Shortcut.all + Shortcut.textOptions).contains { $0.id == ShortcutSettings.noneID })
+
+        settings.setSearch(nil)
+        settings.setText(nil)
+        XCTAssertEqual(defaults.string(forKey: ShortcutSettings.searchKey), ShortcutSettings.noneID)
+        XCTAssertEqual(defaults.string(forKey: ShortcutSettings.textKey), ShortcutSettings.noneID)
+        let relaunched = ShortcutSettings(try XCTUnwrap(UserDefaults(suiteName: name)))
+        XCTAssertNil(relaunched.search, "None for Search is restored after a relaunch")
+        XCTAssertNil(relaunched.text(symbolicHotKeys: nil), "None for Text is restored after a relaunch")
+
+        let used: [String: Any] = ["900": ["enabled": 1, "value": ["parameters": [49, 18, Shortcut.command | Shortcut.shift]]]]
+        XCTAssertNil(relaunched.text(symbolicHotKeys: used), "None skips the conflict fallback")
+        settings.setText(Shortcut.textOptions[2])
+        XCTAssertEqual(relaunched.text(symbolicHotKeys: nil)?.id, "control-option-t", "Text works while Search is None")
+        XCTAssertEqual(Shortcut.text(named: nil, avoiding: nil, symbolicHotKeys: nil).id, "command-shift-1",
+                       "with Search set to None, the Text default has nothing to avoid")
+
+        settings.setSearch(Shortcut.named("control-shift-space"))
+        XCTAssertEqual(relaunched.search?.id, "control-shift-space", "a shortcut replaces None again")
+        defaults.removeObject(forKey: ShortcutSettings.textKey)
+        XCTAssertEqual(relaunched.text(symbolicHotKeys: nil)?.id, "command-shift-1")
+    }
+
     func testHandleToleranceIsAdjustable() {
         let rect = CGRect(x: 100, y: 100, width: 400, height: 300)
         let point = CGPoint(x: 85, y: 85)
@@ -1270,6 +1301,7 @@ let cases: [(String, () throws -> Void)] = [
     ("text fit and background sampling", tests.testTextFitAndBackgroundSampling),
     ("Lens browser handoff page", tests.testLensHandoffPage),
     ("Text shortcut avoids conflicts", tests.testTextShortcutAvoidsConflicts),
+    ("shortcuts can be None", tests.testShortcutsCanBeNone),
     ("handle tolerance is adjustable", tests.testHandleToleranceIsAdjustable),
     ("selection brackets follow the reference", tests.testSelectionBracketsFollowTheReference),
     ("support link comes from Info.plist", tests.testSupportLinkComesFromInfoPlist),

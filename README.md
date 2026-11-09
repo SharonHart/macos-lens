@@ -41,7 +41,8 @@ app's stale entry and asks again.
 
 Press Command + Shift + 2 to open the lens. Nothing is selected or sent until you circle, box or tap
 something to search it; highlight, tap or circle text to select it. Command + Shift + 1 opens it with all the screen's text selected
-(Control + Shift + 1 or Control + Option + T when macOS already uses it). Change both in Settings.
+(Control + Shift + 1 or Control + Option + T when macOS already uses it). Change both in Settings, or
+set either to None and open the lens from the menu-bar icon.
 
 ## Uninstall
 

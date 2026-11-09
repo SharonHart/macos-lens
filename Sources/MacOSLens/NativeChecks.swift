@@ -450,6 +450,7 @@ enum NativeChecks {
             try panelLoadChecks(check: check, spin: spin)
             try openChecks(check: check, spin: spin, gesture: gesture, suite: suite)
             try permissionChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
+            try shortcutNoneChecks(check: check)
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -505,6 +506,52 @@ enum NativeChecks {
 
     /// Launching or pressing the shortcut without Screen Recording shows the onboarding window and never asks macOS;
     /// only its button resets the app's entry and asks, once. Fake calls stand in for the real permission calls.
+    /// Either shortcut can be None. None registers no Carbon hotkey; the checks never register a real one.
+    private static func shortcutNoneChecks(check: (Bool, String) -> Void) throws {
+        let name = "dev.macos-lens.checks.shortcuts"
+        let defaults = try XCTUnwrapCheck(UserDefaults(suiteName: name))
+        defaults.removePersistentDomain(forName: name)
+        defer { defaults.removePersistentDomain(forName: name) }
+        ShortcutSettings(defaults).setText(nil)
+        let controller = AppController(defaults: defaults, presentsOverlays: false)
+        check(controller.plannedHotKeys.map(\.id) == [1], "with Text set to None, only the Search hotkey is planned")
+
+        func popups(_ controller: AppController) -> [NSPopUpButton] {
+            func find(_ view: NSView) -> [NSPopUpButton] {
+                view.subviews.flatMap { ($0 as? NSPopUpButton).map { [$0] } ?? find($0) }
+            }
+            let window = controller.makeSettingsWindow()
+            defer { window.close() }
+            return window.contentView.map(find) ?? []
+        }
+        let shown = popups(controller)
+        check(shown.count == 2 && shown.allSatisfy { popup in
+                  popup.item(at: 0)?.title == "None" && popup.item(at: 1)?.isSeparatorItem == true &&
+                  popup.item(at: 0)?.representedObject as? String == ShortcutSettings.noneID
+              } && shown[0].indexOfSelectedItem == 2 && shown[1].indexOfSelectedItem == 0,
+              "both Settings popups start with None and a separator; Search keeps its key, Text shows None")
+
+        if shown.count == 2 {
+            shown[0].selectItem(at: 0)
+            _ = shown[0].sendAction(shown[0].action, to: shown[0].target)
+        }
+        check(defaults.string(forKey: ShortcutSettings.searchKey) == ShortcutSettings.noneID &&
+              controller.plannedHotKeys.isEmpty && controller.registeredHotKeyCount == 0,
+              "choosing None for both saves “none” and registers no hotkey at all")
+
+        let relaunched = AppController(defaults: defaults, presentsOverlays: false)
+        relaunched.registerShortcuts()
+        let restored = popups(relaunched)
+        check(relaunched.plannedHotKeys.isEmpty && relaunched.registeredHotKeyCount == 0 &&
+              restored.count == 2 && restored.allSatisfy { $0.indexOfSelectedItem == 0 },
+              "None for both shortcuts survives a relaunch and still registers no hotkey")
+    }
+
+    private static func XCTUnwrapCheck<T>(_ value: T?) throws -> T {
+        guard let value else { throw LensError.message("missing value") }
+        return value
+    }
+
     private static func permissionChecks(check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
                                          suite: UserDefaults, folder: URL?) throws {
         var granted = false
