@@ -8,15 +8,30 @@ enum LensMark {
     /// The menu-bar icon size: the full height available to a status item's image.
     static let menuBarSize: CGFloat = 18
 
-    /// A square template image `size` points wide.
-    static func image(size: CGFloat) -> NSImage {
+    /// A square template image `size` points wide. `badged` adds the dot that marks an available update.
+    static func image(size: CGFloat, badged: Bool = false) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             draw(in: rect)
+            if badged { drawBadge(in: rect) }
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = label
+        image.accessibilityDescription = badged ? "\(label), update available" : label
         return image
+    }
+
+    /// A dot over the top-right corner, with a clear ring around it so it reads apart from the bracket.
+    private static func drawBadge(in rect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let radius = rect.width * 0.16
+        let center = CGPoint(x: rect.maxX - radius, y: rect.maxY - radius)
+        func circle(_ r: CGFloat) -> CGRect { CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2) }
+        context.saveGState()
+        context.setBlendMode(.clear)
+        context.fillEllipse(in: circle(radius + rect.width * 0.07))
+        context.restoreGState()
+        context.setFillColor(NSColor.black.cgColor)
+        context.fillEllipse(in: circle(radius))
     }
 
     /// Stroke width and corner arm length, measured from the outer edge to the flat end, in points for a mark `side`

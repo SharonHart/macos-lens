@@ -87,6 +87,31 @@ struct AppMain {
             }
             NSApplication.shared.setActivationPolicy(.accessory)
             NSApplication.shared.run()
+        } else if let index = CommandLine.arguments.firstIndex(of: "--apply-update-check") {
+            // The native checks run this in a child process: it installs a local mock release over a copy of the
+            // app in a temporary folder and exits, so the swap helper has to outlive the process it waits for.
+            let arguments = Array(CommandLine.arguments.dropFirst(index + 1))
+            guard arguments.count == 3 else {
+                fputs("Usage: --apply-update-check <feed> <target app> <current version>\n", stderr)
+                exit(2)
+            }
+            Task {
+                let updater = Updater(feed: UpdateFeed.url(environment: [UpdateFeed.environmentKey: arguments[0]]),
+                                      currentVersion: arguments[2])
+                do {
+                    guard case .available(let update) = try await updater.check() else {
+                        throw LensError.message("The mock feed offered no update.")
+                    }
+                    try await updater.install(update, target: URL(fileURLWithPath: arguments[1]),
+                                              waitingFor: ProcessInfo.processInfo.processIdentifier, reopen: false)
+                    print("HELPER_STARTED \(update.version)")
+                    exit(0)
+                } catch {
+                    fputs("Update check failed: \(error.localizedDescription)\n", stderr)
+                    exit(1)
+                }
+            }
+            RunLoop.main.run()
         } else {
             let app = NSApplication.shared
             let delegate = AppController()

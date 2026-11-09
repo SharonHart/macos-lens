@@ -37,6 +37,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     var screenAccess = ScreenAccess.system
     /// The last window brought forward; checks read it because they never put windows on screen.
     private(set) var presentedWindow: NSWindow?
+    /// Checks give it a local feed and never let it replace this app.
+    var updater = Updater() {
+        didSet { connectUpdater() }
+    }
+    private(set) var updateItem: NSMenuItem?
+    private var updateSeparator: NSMenuItem?
+    private(set) var updateStatusField: NSTextField?
+    private(set) var updateButton: NSButton?
     private let defaults: UserDefaults
     /// Checks build overlays and windows without putting them on screen.
     private let presentsOverlays: Bool
@@ -69,15 +77,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         status.button?.image = LensMark.image(size: LensMark.menuBarSize)
         status.button?.imageScaling = .scaleNone
-        menu = NSMenu()
-        menu.addItem(item("Search screen…", #selector(searchScreen)))
-        menu.addItem(item("Select all text on screen…", #selector(selectText)))
-        menu.addItem(.separator())
-        menu.addItem(item("Settings & privacy…", #selector(showSettings)))
-        menu.addItem(item("Fix Screen Recording permission…", #selector(fixScreenRecording)))
-        menu.addItem(item("Buy Me a Coffee…", #selector(openSupportPage)))
-        menu.addItem(.separator())
-        menu.addItem(item("Quit macOS Lens", #selector(quit)))
+        menu = makeStatusMenu()
         status.button?.target = self
         status.button?.action = #selector(statusClicked)
         status.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -88,7 +88,32 @@ final class AppController: NSObject, NSApplicationDelegate {
                                                           name: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil)
         registerShortcuts()
+        connectUpdater()
+        updater.startAutomaticChecks { [weak self] in self?.checksForUpdates ?? false }
         showFirstWindows()
+    }
+
+    /// The right-click menu. "Update to X.Y.Z…" appears at the top once a check finds a newer release.
+    func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        let update = item("Update to…", #selector(updateNow))
+        let separator = NSMenuItem.separator()
+        updateItem = update
+        updateSeparator = separator
+        menu.addItem(update)
+        menu.addItem(separator)
+        menu.addItem(item("Search screen…", #selector(searchScreen)))
+        menu.addItem(item("Select all text on screen…", #selector(selectText)))
+        menu.addItem(.separator())
+        menu.addItem(item("Settings & privacy…", #selector(showSettings)))
+        menu.addItem(item("Fix Screen Recording permission…", #selector(fixScreenRecording)))
+        menu.addItem(item("Check for Updates…", #selector(checkForUpdates)))
+        menu.addItem(item("Buy Me a Coffee…", #selector(openSupportPage)))
+        menu.addItem(.separator())
+        menu.addItem(item("Quit macOS Lens", #selector(quit)))
+        self.menu = menu
+        updaterChanged()
+        return menu
     }
 
     /// The menu-bar item can be hidden by the notch or menu-bar settings, so every launch shows a window. Without
@@ -855,6 +880,110 @@ final class AppController: NSObject, NSApplicationDelegate {
         present(makeSettingsWindow())
     }
 
+    // MARK: Updates
+
+    private var checksForUpdates: Bool { defaults.object(forKey: "checkForUpdates") as? Bool ?? true }
+
+    private func connectUpdater() {
+        updater.onChange = { [weak self] in self?.updaterChanged() }
+        updaterChanged()
+    }
+
+    /// Shows a found update in the menu, as a dot on the menu-bar icon and in Settings' update row.
+    func updaterChanged() {
+        let version = updater.update?.version.description
+        updateItem?.title = "Update to \(version ?? "")…"
+        updateItem?.isHidden = version == nil
+        updateSeparator?.isHidden = version == nil
+        status?.button?.image = LensMark.image(size: LensMark.menuBarSize, badged: version != nil)
+        updateStatusField?.stringValue = updater.statusText
+        updateButton?.title = version == nil ? "Check now" : "Update now"
+        updateButton?.isEnabled = !updater.isBusy
+        if let form = updateStatusField?.superview as? FormView, form.window != nil { form.fitWindow() }
+    }
+
+    /// The menu's manual check reports its result in an alert.
+    @objc private func checkForUpdates() {
+        Task {
+            do {
+                switch try await updater.check() {
+                case .upToDate(let version):
+                    inform("You're up to date (\(version)).", detail: "No newer release of macOS Lens is published.")
+                case .available(let update):
+                    offer(update)
+                }
+            } catch {
+                showError(LensError.message("Couldn't check for updates. \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    /// Settings' button checks, or installs once an update is known; its row shows the progress.
+    @objc private func updateButtonClicked() {
+        if updater.update != nil { return updateNow() }
+        Task { _ = try? await updater.check() }
+    }
+
+    @objc private func toggleUpdateChecks(_ sender: NSButton) {
+        defaults.set(sender.state == .on, forKey: "checkForUpdates")
+    }
+
+    @objc private func openReleaseNotes() {
+        openWebsite(updater.update?.page ?? UpdateFeed.releasesPage)
+    }
+
+    private func offer(_ update: AvailableUpdate) {
+        guard presentsOverlays else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "macOS Lens \(update.version) is available"
+        alert.informativeText = "You have \(updater.currentVersion). Updating downloads it from GitHub, checks it " +
+            "against the release's SHA256SUMS, replaces this copy and reopens it. macOS then asks you to allow " +
+            "Screen Recording again for the new version."
+        alert.addButton(withTitle: "Update Now")
+        alert.addButton(withTitle: "Release Notes")
+        alert.addButton(withTitle: "Later")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: updateNow()
+        case .alertSecondButtonReturn: openWebsite(update.page)
+        default: break
+        }
+    }
+
+    private func inform(_ message: String, detail: String) {
+        guard presentsOverlays else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = detail
+        alert.runModal()
+    }
+
+    /// Downloads, verifies and installs the found update over this copy, then quits; the helper reopens it. When
+    /// the app's folder can't be changed, the release page opens instead.
+    @objc private func updateNow() {
+        guard let update = updater.update, !updater.isBusy else { return }
+        showSettings()
+        Task {
+            do {
+                try await updater.install(update, target: Bundle.main.bundleURL,
+                                          waitingFor: ProcessInfo.processInfo.processIdentifier, reopen: true)
+                NSApp.terminate(nil)
+            } catch let error as UpdateError {
+                if case .notWritable = error {
+                    openWebsite(update.page)
+                    showError(LensError.message("\(error.localizedDescription) The release page opened in your " +
+                                                "browser: download macOS-Lens-\(update.version).zip there and " +
+                                                "replace the app yourself."))
+                } else {
+                    showError(error)
+                }
+            } catch {
+                showError(error)
+            }
+        }
+    }
+
     /// Builds Settings once. The native checks render it offscreen without showing it.
     func makeSettingsWindow() -> NSWindow {
         if let settingsWindow { return settingsWindow }
@@ -935,6 +1064,22 @@ final class AppController: NSObject, NSApplicationDelegate {
         form.add(.item(NSButton(title: "Fix Screen Recording permission…", target: self,
                                 action: #selector(fixScreenRecording))),
                  .item(CoffeeButton(target: self, action: #selector(openSupportPage)), height: 34), gap: 8)
+        let updateStatus = label(updater.statusText)
+        updateStatusField = updateStatus
+        let update = NSButton(title: "Check now", target: self, action: #selector(updateButtonClicked))
+        updateButton = update
+        let notes = NSButton(title: "Release notes", target: self, action: #selector(openReleaseNotes))
+        notes.isBordered = false
+        notes.attributedTitle = NSAttributedString(string: "Release notes", attributes: [
+            .foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        ])
+        form.add(.item(updateStatus), fixed(notes, 100), fixed(update, 120), gap: 22)
+        let automatic = NSButton(checkboxWithTitle: "Check for updates automatically", target: self,
+                                 action: #selector(toggleUpdateChecks(_:)))
+        automatic.state = checksForUpdates ? .on : .off
+        form.add(.item(automatic, .fit), gap: 6)
+        updaterChanged()
         form.add(fixed(NSButton(title: "Try local OCR", target: self, action: #selector(tryOCR)), 150), .spacer(),
                  fixed(NSButton(title: "Save settings", target: self, action: #selector(saveSettings)), 130), gap: 28)
         form.fitWindow(width: max(600, form.naturalWidth))

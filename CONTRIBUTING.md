@@ -44,3 +44,7 @@ tests and native checks, then `scripts/package.sh`, which builds a universal (ar
 writes `dist/macOS-Lens-<version>.zip`, `dist/macOS-Lens-<version>.dmg` and `dist/SHA256SUMS`, and
 updates the version and checksum in `Casks/macos-lens.rb`. It prints the `gh release create` command
 to run; commit the updated cask first.
+
+The in-app updater reads the latest published release and needs its assets named exactly
+`macOS-Lens-X.Y.Z.zip` and `SHA256SUMS`, with a tag of `vX.Y.Z` matching the app's version. Keep those
+names, or installed copies can no longer update themselves.

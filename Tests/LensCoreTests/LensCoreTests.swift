@@ -31,12 +31,19 @@ private func XCTAssertNotNil<T>(_ value: T?, _ message: String = "",
     XCTAssertTrue(value != nil, "Expected non-nil \(message)", file: file, line: line)
 }
 
-private func XCTAssertThrowsError<T>(_ operation: @autoclosure () throws -> T,
+private func XCTAssertThrowsError<T>(_ operation: @autoclosure () throws -> T, _ message: String = "",
                                     file: StaticString = #filePath, line: UInt = #line) {
     do {
         _ = try operation()
-        XCTAssertTrue(false, "Expected error", file: file, line: line)
+        XCTAssertTrue(false, "Expected error \(message)", file: file, line: line)
     } catch {}
+}
+
+private func XCTAssertNoThrowCheck<T>(_ operation: @autoclosure () throws -> T, _ message: String = "",
+                                      file: StaticString = #filePath, line: UInt = #line) {
+    do { _ = try operation() } catch {
+        XCTAssertTrue(false, "Unexpected error \(error.localizedDescription) \(message)", file: file, line: line)
+    }
 }
 
 final class LensCoreTests {
@@ -875,6 +882,149 @@ extension LensCoreTests {
         XCTAssertEqual(relaunched.text(symbolicHotKeys: nil)?.id, "command-shift-1")
     }
 
+    func testReleaseVersionsAndTags() throws {
+        let current = try XCTUnwrap(ReleaseVersion("0.2.1"))
+        XCTAssertEqual(ReleaseVersion("v0.2.1"), current, "tags start with v")
+        XCTAssertEqual(ReleaseVersion("V0.2.1"), current)
+        XCTAssertEqual(ReleaseVersion(" 0.2.1\n"), current)
+        XCTAssertEqual(ReleaseVersion("v1")?.description, "1.0.0")
+        XCTAssertEqual(ReleaseVersion("v1.2")?.description, "1.2.0")
+        XCTAssertEqual(ReleaseVersion("v1.2.3+build.5")?.isPrerelease, false)
+        XCTAssertEqual(ReleaseVersion("v1.2.3-beta.1")?.isPrerelease, true)
+        for bad in ["", "v", "latest", "1..2", "1.2.3.4", "1.x", "v-1.2", "１.２.３", "1.2.3 beta"] {
+            XCTAssertNil(ReleaseVersion(bad), "\(bad) is not a version")
+        }
+        let ordered = ["0.1.9", "0.2.0", "0.2.1-rc.1", "0.2.1", "0.2.2", "0.10.0", "1.0.0", "v9.9.9"]
+        let versions = ordered.compactMap(ReleaseVersion.init)
+        XCTAssertEqual(versions.count, ordered.count)
+        for (older, newer) in zip(versions, versions.dropFirst()) {
+            XCTAssertTrue(older < newer, "\(older) < \(newer), compared as numbers")
+        }
+        XCTAssertFalse(current < current)
+    }
+
+    func testReleaseFeedSelectsPublishedUpdates() throws {
+        func release(_ tag: String, draft: Bool = false, prerelease: Bool = false,
+                     assets: [String]? = nil) -> String {
+            let version = ReleaseVersion(tag)?.description ?? tag
+            let names = assets ?? ["macOS-Lens-\(version).dmg", "macOS-Lens.dmg", "macOS-Lens-\(version).zip", "SHA256SUMS"]
+            let list = names.map {
+                "{\"name\":\"\($0)\",\"browser_download_url\":\"https://github.com/SharonHart/macos-lens/releases/download/\(tag)/\($0)\",\"size\":1}"
+            }
+            return "{\"tag_name\":\"\(tag)\",\"html_url\":\"https://github.com/SharonHart/macos-lens/releases/tag/\(tag)\"," +
+                   "\"draft\":\(draft),\"prerelease\":\(prerelease),\"body\":\"notes\",\"assets\":[\(list.joined(separator: ","))]}"
+        }
+        let newer = try UpdateFeed.evaluate(Data(release("v0.3.0").utf8), current: "0.2.1")
+        guard case .available(let update) = newer else { throw LensError.message("0.3.0 should be offered: \(newer)") }
+        XCTAssertEqual(update.version.description, "0.3.0")
+        XCTAssertEqual(update.archive.name, "macOS-Lens-0.3.0.zip", "the versioned zip, never a DMG")
+        XCTAssertEqual(update.archive.url.absoluteString,
+                       "https://github.com/SharonHart/macos-lens/releases/download/v0.3.0/macOS-Lens-0.3.0.zip")
+        XCTAssertEqual(update.checksums.name, "SHA256SUMS")
+        XCTAssertEqual(update.page.absoluteString, "https://github.com/SharonHart/macos-lens/releases/tag/v0.3.0")
+
+        XCTAssertEqual(try UpdateFeed.evaluate(Data(release("v0.2.1").utf8), current: "0.2.1"),
+                       .upToDate(try XCTUnwrap(ReleaseVersion("0.2.1"))))
+        XCTAssertEqual(try UpdateFeed.evaluate(Data(release("v0.2.0").utf8), current: "0.2.1"),
+                       .upToDate(try XCTUnwrap(ReleaseVersion("0.2.1"))), "an older release is never offered")
+        for ignored in [release("v0.9.0", draft: true), release("v0.9.0", prerelease: true), release("v0.9.0-beta")] {
+            XCTAssertThrowsError(try UpdateFeed.evaluate(Data(ignored.utf8), current: "0.2.1"),
+                                 "drafts and prereleases are ignored")
+        }
+        let list = "[\(release("v0.9.0", draft: true)),\(release("v0.4.0-rc.1")),\(release("v0.3.1")),\(release("v0.3.0"))]"
+        guard case .available(let fromList) = try UpdateFeed.evaluate(Data(list.utf8), current: "0.2.1") else {
+            throw LensError.message("a releases list should offer 0.3.1")
+        }
+        XCTAssertEqual(fromList.version.description, "0.3.1")
+
+        XCTAssertThrowsError(try UpdateFeed.evaluate(Data(release("v0.3.0", assets: ["macOS-Lens-0.3.0.dmg", "SHA256SUMS"]).utf8),
+                                                     current: "0.2.1"), "no zip, no in-app update")
+        XCTAssertThrowsError(try UpdateFeed.evaluate(Data(release("v0.3.0", assets: ["macOS-Lens-0.3.0.zip"]).utf8),
+                                                     current: "0.2.1"), "no SHA256SUMS, no in-app update")
+        XCTAssertThrowsError(try UpdateFeed.evaluate(Data(release("v0.3.0", assets: ["macOS-Lens-0.2.9.zip", "SHA256SUMS"]).utf8),
+                                                     current: "0.2.1"), "the zip must carry the tag's version")
+        do {
+            _ = try UpdateFeed.evaluate(Data("{\"message\":\"API rate limit exceeded\"}".utf8), current: "0.2.1")
+            XCTAssertTrue(false, "a GitHub error is reported")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("API rate limit exceeded"))
+        }
+
+        XCTAssertEqual(UpdateFeed.url(environment: [:]), UpdateFeed.latest)
+        XCTAssertEqual(UpdateFeed.latest.absoluteString, "https://api.github.com/repos/SharonHart/macos-lens/releases/latest")
+        XCTAssertEqual(UpdateFeed.url(environment: [UpdateFeed.environmentKey: "/tmp/feed.json"]),
+                       URL(fileURLWithPath: "/tmp/feed.json"))
+        XCTAssertEqual(UpdateFeed.url(environment: [UpdateFeed.environmentKey: "http://127.0.0.1:8000/r.json"]).absoluteString,
+                       "http://127.0.0.1:8000/r.json")
+
+        let version = try XCTUnwrap(ReleaseVersion("v0.3.0"))
+        XCTAssertNoThrowCheck(try UpdateFeed.validate(info: ["CFBundleIdentifier": "dev.macos-lens.client",
+                                                             "CFBundleShortVersionString": "0.3.0"], expected: version))
+        XCTAssertThrowsError(try UpdateFeed.validate(info: ["CFBundleIdentifier": "com.example.other",
+                                                            "CFBundleShortVersionString": "0.3.0"], expected: version))
+        XCTAssertThrowsError(try UpdateFeed.validate(info: ["CFBundleIdentifier": "dev.macos-lens.client",
+                                                            "CFBundleShortVersionString": "0.2.9"], expected: version))
+        XCTAssertThrowsError(try UpdateFeed.validate(info: nil, expected: version))
+    }
+
+    func testChecksumsAndSwap() throws {
+        let digest = String(repeating: "ab", count: 32)
+        let other = String(repeating: "CD", count: 32)
+        let sums = """
+        \(digest)  macOS-Lens-0.3.0.zip
+        \(other) *macOS-Lens-0.3.0.dmg
+        \(digest)  dist/macOS-Lens.dmg
+        not a checksum line
+        1234  short.zip
+
+        """
+        let parsed = Checksums.parse(sums)
+        XCTAssertEqual(parsed["macOS-Lens-0.3.0.zip"], digest)
+        XCTAssertEqual(parsed["macOS-Lens-0.3.0.dmg"], other.lowercased(), "binary-mode lines and upper-case digests")
+        XCTAssertEqual(parsed.count, 3)
+        XCTAssertEqual(Checksums.digest(for: "macOS-Lens.dmg", in: sums), digest, "a dist/ prefix still matches")
+        XCTAssertNil(Checksums.digest(for: "macOS-Lens-9.9.9.zip", in: sums))
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("lens-update-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("macOS-Lens-0.3.0.zip")
+        try Data("abc".utf8).write(to: file)
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        XCTAssertEqual(try Checksums.sha256(of: file), abc)
+        XCTAssertNoThrowCheck(try Checksums.verify(file, named: "macOS-Lens-0.3.0.zip", against: "\(abc)  macOS-Lens-0.3.0.zip\n"))
+        XCTAssertThrowsError(try Checksums.verify(file, named: "macOS-Lens-0.3.0.zip", against: sums))
+        XCTAssertThrowsError(try Checksums.verify(file, named: "macOS-Lens-0.3.0.zip", against: "\(abc)  other.zip\n"))
+
+        // The swap helper, with paths containing spaces and shell characters, waiting on a process that has exited.
+        let apps = folder.appendingPathComponent("Apps $(touch pwned) 'x'", isDirectory: true)
+        let staging = folder.appendingPathComponent("staging", isDirectory: true)
+        let target = apps.appendingPathComponent("macOS Lens.app", isDirectory: true)
+        let new = staging.appendingPathComponent("macOS Lens.app", isDirectory: true)
+        for (bundle, text) in [(target, "old"), (new, "new")] {
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: bundle.appendingPathComponent("version"))
+        }
+        let finished = Process()
+        finished.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try finished.run()
+        finished.waitUntilExit()
+        let swap = Process()
+        swap.executableURL = URL(fileURLWithPath: "/bin/sh")
+        swap.arguments = UpdateSwap.arguments(waitingFor: finished.processIdentifier, new: new, target: target,
+                                              reopen: false, staging: staging)
+        swap.currentDirectoryURL = folder
+        try swap.run()
+        swap.waitUntilExit()
+        XCTAssertEqual(swap.terminationStatus, 0)
+        XCTAssertEqual(try String(contentsOf: target.appendingPathComponent("version"), encoding: .utf8), "new")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: apps.path), ["macOS Lens.app"],
+                       "the replaced bundle is deleted once the new one is in place")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("pwned").path),
+                       "paths are arguments, never shell code")
+    }
+
     func testHandleToleranceIsAdjustable() {
         let rect = CGRect(x: 100, y: 100, width: 400, height: 300)
         let point = CGPoint(x: 85, y: 85)
@@ -1302,6 +1452,9 @@ let cases: [(String, () throws -> Void)] = [
     ("Lens browser handoff page", tests.testLensHandoffPage),
     ("Text shortcut avoids conflicts", tests.testTextShortcutAvoidsConflicts),
     ("shortcuts can be None", tests.testShortcutsCanBeNone),
+    ("release versions and tags", tests.testReleaseVersionsAndTags),
+    ("release feed selects published updates", tests.testReleaseFeedSelectsPublishedUpdates),
+    ("checksums and the swap helper", tests.testChecksumsAndSwap),
     ("handle tolerance is adjustable", tests.testHandleToleranceIsAdjustable),
     ("selection brackets follow the reference", tests.testSelectionBracketsFollowTheReference),
     ("support link comes from Info.plist", tests.testSupportLinkComesFromInfoPlist),

@@ -3,6 +3,9 @@
 macOS Lens runs on macOS 14 Sonoma or newer, on Apple silicon and Intel Macs. Releases are prebuilt:
 nothing to compile.
 
+Once installed, updates come through **Check for Updates…** in the menu-bar menu (it also checks
+GitHub's releases anonymously once a day; turn that off in Settings).
+
 ## One-line install
 
 ```sh

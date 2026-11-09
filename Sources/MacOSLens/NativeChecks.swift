@@ -451,6 +451,7 @@ enum NativeChecks {
             try openChecks(check: check, spin: spin, gesture: gesture, suite: suite)
             try permissionChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
             try shortcutNoneChecks(check: check)
+            try updateChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -545,6 +546,232 @@ enum NativeChecks {
         check(relaunched.plannedHotKeys.isEmpty && relaunched.registeredHotKeyCount == 0 &&
               restored.count == 2 && restored.allSatisfy { $0.indexOfSelectedItem == 0 },
               "None for both shortcuts survives a relaunch and still registers no hotkey")
+    }
+
+    // MARK: - Updates
+
+    private final class Outcome<T> { var result: Result<T, Error>? }
+
+    /// The updater against a local mock release, in a temporary folder: a 9.9.9 zip built from this executable,
+    /// SHA256SUMS and a release JSON with file URLs. Nothing is downloaded and /Applications is never touched.
+    private static func updateChecks(check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
+                                     suite: UserDefaults, folder: URL?) throws {
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent("macos-lens-update-checks-\(UUID().uuidString)")
+        let applications = root.appendingPathComponent("Applications", isDirectory: true)
+        let release = root.appendingPathComponent("release", isDirectory: true)
+        defer {
+            try? files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: applications.path)
+            try? files.removeItem(at: root)
+        }
+        for folder in [applications, release, root.appendingPathComponent("build")] {
+            try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+
+        @discardableResult
+        func tool(_ path: String, _ arguments: [String]) throws -> (status: Int32, output: String) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = arguments
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
+            try process.run()
+            let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            return (process.terminationStatus, output)
+        }
+        let executable = try XCTUnwrapCheck(Bundle.main.executableURL)
+        func makeApp(_ app: URL, version: String) throws {
+            let macOS = app.appendingPathComponent("Contents/MacOS", isDirectory: true)
+            try files.createDirectory(at: macOS, withIntermediateDirectories: true)
+            try files.copyItem(at: executable, to: macOS.appendingPathComponent("MacOSLens"))
+            let info: NSDictionary = [
+                "CFBundleIdentifier": UpdateFeed.bundleID, "CFBundleExecutable": "MacOSLens",
+                "CFBundleName": "macOS Lens", "CFBundlePackageType": "APPL",
+                "CFBundleShortVersionString": version, "CFBundleVersion": "1", "LSUIElement": true
+            ]
+            try info.write(to: app.appendingPathComponent("Contents/Info.plist"))
+            let signed = try tool("/usr/bin/codesign", ["--force", "--sign", "-", app.path])
+            guard signed.status == 0 else { throw LensError.message("codesign failed: \(signed.output)") }
+        }
+        func version(_ app: URL) -> String? {
+            NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist"))?["CFBundleShortVersionString"]
+                as? String
+        }
+        func verifies(_ app: URL) -> Bool {
+            (try? tool("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]).status) == 0
+        }
+        func leftovers() -> [String] {
+            ((try? files.contentsOfDirectory(atPath: applications.path)) ?? []).filter { $0 != "macOS Lens.app" }
+        }
+        func staging() -> Set<String> {
+            Set(((try? files.contentsOfDirectory(atPath: files.temporaryDirectory.path)) ?? [])
+                .filter { $0.hasPrefix("macOS-Lens-update-") })
+        }
+        func wait<T>(_ work: @escaping @MainActor () async throws -> T) -> Result<T, Error>? {
+            let outcome = Outcome<T>()
+            Task { @MainActor in
+                do { outcome.result = .success(try await work()) } catch { outcome.result = .failure(error) }
+            }
+            _ = spin({ outcome.result != nil }, 60)
+            return outcome.result
+        }
+
+        let installed = applications.appendingPathComponent("macOS Lens.app")
+        try makeApp(installed, version: "0.2.1")
+        let built = root.appendingPathComponent("build/macOS Lens.app")
+        try makeApp(built, version: "9.9.9")
+        let zip = release.appendingPathComponent("macOS-Lens-9.9.9.zip")
+        try tool("/usr/bin/ditto", ["-c", "-k", "--keepParent", built.path, zip.path])
+        let digest = try Checksums.sha256(of: zip)
+        try "\(digest)  macOS-Lens-9.9.9.zip\n\(String(repeating: "0", count: 64))  macOS-Lens-9.9.9.dmg\n"
+            .write(to: release.appendingPathComponent("SHA256SUMS"), atomically: true, encoding: .utf8)
+        try "\(String(repeating: "0", count: 64))  macOS-Lens-9.9.9.zip\n"
+            .write(to: release.appendingPathComponent("BAD-SHA256SUMS"), atomically: true, encoding: .utf8)
+        func feed(_ name: String, sums: String) throws -> URL {
+            func asset(_ name: String, _ file: String) -> [String: Any] {
+                ["name": name, "browser_download_url": release.appendingPathComponent(file).absoluteString]
+            }
+            let releases: [[String: Any]] = [
+                ["tag_name": "v10.0.0-beta.1", "html_url": "https://example.invalid/beta", "draft": false,
+                 "prerelease": true, "assets": []],
+                ["tag_name": "v9.9.9", "html_url": "https://github.com/SharonHart/macos-lens/releases/tag/v9.9.9",
+                 "draft": false, "prerelease": false,
+                 "assets": [asset("macOS-Lens-9.9.9.zip", zip.lastPathComponent), asset("SHA256SUMS", sums)]]
+            ]
+            let url = root.appendingPathComponent(name)
+            try JSONSerialization.data(withJSONObject: releases).write(to: url)
+            return url
+        }
+        let good = try feed("release.json", sums: "SHA256SUMS")
+        let bad = try feed("bad-release.json", sums: "BAD-SHA256SUMS")
+        check(version(installed) == "0.2.1" && verifies(installed) && files.fileExists(atPath: zip.path),
+              "a mock 0.2.1 app, an ad-hoc signed 9.9.9 zip and SHA256SUMS are built in a temporary folder")
+
+        let updater = Updater(feed: good, currentVersion: "0.2.1")
+        let found = wait { try await updater.check() }
+        if case .success(.available(let update))? = found {
+            check(update.version.description == "9.9.9" && update.archive.name == "macOS-Lens-9.9.9.zip" &&
+                  updater.state == .available("9.9.9") && updater.statusText.contains("9.9.9"),
+                  "a check finds 9.9.9 from the release feed and skips the newer prerelease")
+        } else {
+            check(false, "a check finds 9.9.9 from the release feed (\(String(describing: found)))")
+        }
+        let current = wait { try await Updater(feed: good, currentVersion: "9.9.9").check() }
+        if case .success(.upToDate(let version))? = current {
+            check(version.description == "9.9.9", "the same version reports up to date")
+        } else {
+            check(false, "the same version reports up to date")
+        }
+
+        let before = staging()
+        let badUpdater = Updater(feed: bad, currentVersion: "0.2.1")
+        let failed = wait { () async throws -> Void in
+            guard case .available(let update) = try await badUpdater.check() else { return }
+            try await badUpdater.install(update, target: installed, waitingFor: getpid(), reopen: false)
+        }
+        if case .failure(let error)? = failed, let update = error as? UpdateError, case .checksumMismatch = update {
+            check(version(installed) == "0.2.1" && verifies(installed) && leftovers().isEmpty &&
+                  staging() == before && error.localizedDescription.contains("SHA-256"),
+                  "a wrong SHA-256 aborts with a clear error, leaves the old app intact and cleans up its download")
+            if case .failed(let message) = badUpdater.state {
+                check(message.contains("SHA-256") && message.contains("nothing was installed"),
+                      "the failure shows in the update status")
+            } else {
+                check(false, "the failure shows in the update status")
+            }
+        } else {
+            check(false, "a wrong SHA-256 aborts the update (\(String(describing: failed)))")
+        }
+
+        try files.setAttributes([.posixPermissions: 0o555], ofItemAtPath: applications.path)
+        let locked = wait { () async throws -> Void in
+            guard let update = updater.update else { return }
+            try await updater.install(update, target: installed, waitingFor: getpid(), reopen: false)
+        }
+        try files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: applications.path)
+        if case .failure(let error)? = locked, let update = error as? UpdateError, case .notWritable = update {
+            check(version(installed) == "0.2.1" && staging() == before,
+                  "a folder the app can't write to stops the update before downloading anything")
+        } else {
+            check(false, "a read-only folder is refused (\(String(describing: locked)))")
+        }
+
+        // The real swap, from a child process: the helper must outlive the process it replaces.
+        let child = Process()
+        child.executableURL = executable
+        child.arguments = ["--apply-update-check", good.path, installed.path, "0.2.1"]
+        let pipe = Pipe()
+        child.standardOutput = pipe
+        child.standardError = pipe
+        try child.run()
+        let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        child.waitUntilExit()
+        check(child.terminationStatus == 0 && output.contains("HELPER_STARTED 9.9.9"),
+              "the child downloads, verifies and unpacks 9.9.9, starts the helper and exits")
+        let swapped = spin({ version(installed) == "9.9.9" && leftovers().isEmpty && staging() == before }, 20)
+        check(swapped && verifies(installed),
+              "after the child exits, the helper swaps in 9.9.9 at the same path; the signature verifies and " +
+              "nothing is left behind")
+
+        let controller = AppController(defaults: suite, presentsOverlays: false)
+        let menu = controller.makeStatusMenu()
+        let titles = menu.items.map(\.title)
+        check(controller.updateItem?.isHidden == true && titles.contains("Check for Updates…") &&
+              titles.firstIndex(of: "Check for Updates…").map { $0 < (titles.firstIndex(of: "Quit macOS Lens") ?? 0) }
+              == true,
+              "the menu always has Check for Updates…, and hides Update to… until a release is found")
+        controller.updater = Updater(feed: good, currentVersion: "0.2.1")
+        let window = controller.makeSettingsWindow()
+        defer { window.close() }
+        func checkbox(_ view: NSView) -> NSButton? {
+            for sub in view.subviews {
+                if let button = sub as? NSButton, button.title == "Check for updates automatically" { return button }
+                if let found = checkbox(sub) { return found }
+            }
+            return nil
+        }
+        let automatic = window.contentView.flatMap(checkbox)
+        check(automatic?.state == .on && controller.updateButton?.title == "Check now" &&
+              controller.updateStatusField?.stringValue == "macOS Lens 0.2.1",
+              "Settings shows the version, Check now and automatic checks on by default")
+        _ = wait { try await controller.updater.check() }
+        check(controller.updateItem?.isHidden == false && controller.updateItem?.title == "Update to 9.9.9…" &&
+              controller.updateButton?.title == "Update now" &&
+              controller.updateStatusField?.stringValue.contains("9.9.9") == true,
+              "a found update shows Update to 9.9.9… in the menu and Update now in Settings")
+        if let automatic {
+            automatic.state = .off
+            _ = automatic.sendAction(automatic.action, to: automatic.target)
+        }
+        check(suite.object(forKey: "checkForUpdates") as? Bool == false,
+              "turning automatic checks off is saved")
+        suite.removeObject(forKey: "checkForUpdates")
+        _ = try preview(window, folder, "updates.settings.png")
+
+        func mark(badged: Bool) throws -> Bitmap {
+            try XCTUnwrapCheck(Bitmap(try rendered(NSSize(width: 18, height: 18), scale: 4) { rect in
+                NSColor.white.setFill()
+                rect.fill()
+                LensMark.image(size: 18, badged: badged).draw(in: rect)
+            }))
+        }
+        let plain = try mark(badged: false), badged = try mark(badged: true)
+        if let folder {
+            let pair = try rendered(NSSize(width: 64, height: 28), scale: 4) { rect in
+                NSColor.white.setFill()
+                rect.fill()
+                LensMark.image(size: 18).draw(in: NSRect(x: 8, y: 5, width: 18, height: 18))
+                LensMark.image(size: 18, badged: true).draw(in: NSRect(x: 38, y: 5, width: 18, height: 18))
+            }
+            try write(pair, to: folder.appendingPathComponent("updates.badge.png"))
+        }
+        let dot = (x: Int(Double(badged.width) * 0.84), y: Int(Double(badged.height) * 0.84))
+        let centre = (x: badged.width / 2, y: badged.height / 2)
+        check(badged.luma(dot.x, dot.y) < 0.2 && plain.luma(dot.x, dot.y) > 0.9 &&
+              badged.luma(centre.x, centre.y) == plain.luma(centre.x, centre.y),
+              "the menu-bar icon gets a dot at its top-right corner while an update is available")
     }
 
     private static func XCTUnwrapCheck<T>(_ value: T?) throws -> T {
