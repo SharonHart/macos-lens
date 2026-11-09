@@ -30,7 +30,7 @@ while (($#)); do
     esac
     shift
 done
-[[ -n "$VERSION" ]] || die "Usage: $0 <version>   (for example: $0 0.2.0)"
+[[ -n "$VERSION" ]] || die "Usage: $0 <version>   (for example: $0 0.2.1)"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Version must look like 1.2.3 (got '$VERSION')."
 
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
@@ -62,9 +62,11 @@ bash scripts/package.sh
 
 ZIP="dist/macOS-Lens-$VERSION.zip"
 DMG="dist/macOS-Lens-$VERSION.dmg"
-for file in "$ZIP" "$DMG" dist/SHA256SUMS; do
+LATEST_DMG="dist/macOS-Lens.dmg"
+for file in "$ZIP" "$DMG" "$LATEST_DMG" dist/SHA256SUMS; do
     [[ -f "$file" ]] || die "Packaging didn't produce $file."
 done
+cmp -s "$DMG" "$LATEST_DMG" || die "$LATEST_DMG differs from $DMG."
 ARCHS="$(lipo -archs ".build/package/macOS Lens.app/Contents/MacOS/MacOSLens")"
 if [[ "$ARCHS" == *x86_64* ]]; then
     PLATFORMS="Universal app for Apple silicon and Intel Macs"
@@ -75,11 +77,13 @@ fi
 step "Ready to publish macOS Lens $VERSION ($ARCHS)"
 cat <<EOF
 Before publishing, commit and push the version bump and Casks/macos-lens.rb (its sha256 now matches
-$ZIP). Upload exactly these files: running package.sh again produces a different zip.
+$ZIP). Upload exactly these files: running package.sh again produces a different zip. Keep the asset
+names: the in-app updater looks for macOS-Lens-$VERSION.zip and SHA256SUMS, and macOS-Lens.dmg keeps
+https://github.com/$REPO/releases/latest/download/macOS-Lens.dmg pointing at the newest disk image.
 
 Then run:
 
-gh release create v$VERSION $ZIP $DMG dist/SHA256SUMS --repo $REPO --title 'macOS Lens $VERSION' --notes '$PLATFORMS, running macOS 14 or newer. No Xcode needed.
+gh release create v$VERSION $ZIP $DMG $LATEST_DMG dist/SHA256SUMS --repo $REPO --title 'macOS Lens $VERSION' --notes '$PLATFORMS, running macOS 14 or newer. No Xcode needed.
 
 Install or update:
 curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash

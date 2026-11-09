@@ -36,12 +36,14 @@ privacy settings: after launching a new build, click **Allow Screen Recording…
 ## Releasing
 
 ```sh
-./scripts/release.sh 0.2.0
+./scripts/release.sh 0.2.1
 ```
 
 The version must match `CFBundleShortVersionString` in `Resources/Info.plist`. The script runs the
 tests and native checks, then `scripts/package.sh`, which builds a universal (arm64 and x86_64) app and
-writes `dist/macOS-Lens-<version>.zip`, `dist/macOS-Lens-<version>.dmg` and `dist/SHA256SUMS`, and
+writes `dist/macOS-Lens-<version>.zip`, `dist/macOS-Lens-<version>.dmg`, a version-less copy
+`dist/macOS-Lens.dmg` (so `releases/latest/download/macOS-Lens.dmg` always resolves) and
+`dist/SHA256SUMS`, and
 updates the version and checksum in `Casks/macos-lens.rb`. It prints the `gh release create` command
 to run; commit the updated cask first.
 

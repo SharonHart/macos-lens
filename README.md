@@ -18,8 +18,8 @@ again to update. Options such as `--no-launch` or `--dir <path>` go after `bash 
 
 ## Disk image
 
-Download `macOS-Lens-<version>.dmg` from the
-[latest release](https://github.com/SharonHart/macos-lens/releases/latest), open it, and drag
+Download [macOS-Lens.dmg](https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg)
+from the [latest release](https://github.com/SharonHart/macos-lens/releases/latest), open it, and drag
 **macOS Lens** onto **Applications**. Releases aren't notarized, so macOS blocks the first launch: open
 System Settings › Privacy & Security and click **Open Anyway** next to the macOS Lens message. This is
 needed once per downloaded version.

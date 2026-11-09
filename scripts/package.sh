@@ -2,7 +2,8 @@
 # Builds a universal (Apple silicon + Intel) release of macOS Lens and packages it:
 #   dist/macOS-Lens-<version>.zip   app archive used by install.sh and the Homebrew cask
 #   dist/macOS-Lens-<version>.dmg   drag-to-Applications disk image
-#   dist/SHA256SUMS                 checksums for both
+#   dist/macOS-Lens.dmg             the same disk image without the version, for releases/latest/download links
+#   dist/SHA256SUMS                 checksums for all three
 # The version comes from Resources/Info.plist. The app is ad-hoc signed, and packaging never changes
 # Screen Recording permissions. Casks/macos-lens.rb is updated to match the new zip.
 set -euo pipefail
@@ -21,6 +22,7 @@ STAGE="$ROOT/.build/package"
 APP="$STAGE/macOS Lens.app"
 ZIP="$DIST/$NAME.zip"
 DMG="$DIST/$NAME.dmg"
+LATEST_DMG="$DIST/macOS-Lens.dmg"
 CASK="$ROOT/Casks/macos-lens.rb"
 
 rm -rf "$STAGE"
@@ -65,9 +67,11 @@ ln -s /Applications "$DMG_ROOT/Applications"
 rm -f "$DMG"
 hdiutil create -quiet -volname "macOS Lens" -srcfolder "$DMG_ROOT" -fs HFS+ -format UDZO -ov "$DMG"
 hdiutil verify -quiet "$DMG"
+rm -f "$LATEST_DMG"
+cp "$DMG" "$LATEST_DMG"
 
 step "Writing SHA256SUMS"
-(cd "$DIST" && shasum -a 256 "$NAME.zip" "$NAME.dmg" >SHA256SUMS)
+(cd "$DIST" && shasum -a 256 "$NAME.zip" "$NAME.dmg" macOS-Lens.dmg >SHA256SUMS)
 ZIP_SHA="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
 
 # Zips aren't byte-for-byte reproducible, so the cask must follow every package run.
@@ -84,4 +88,4 @@ step "Done"
 printf 'Architectures: %s\n' "$ARCHS"
 [[ "$ARCHS" == *x86_64* ]] || printf 'NOTE: arm64 only, Intel Macs are not supported by this build.\n'
 (cd "$DIST" && cat SHA256SUMS)
-printf '%s\n' "$ZIP" "$DMG" "$DIST/SHA256SUMS"
+printf '%s\n' "$ZIP" "$DMG" "$LATEST_DMG" "$DIST/SHA256SUMS"
