@@ -144,8 +144,9 @@ enum NativeChecks {
             // Command-A frames the whole screen but sends nothing; only Return or the Lens button searches it.
             view.selectWholeScreen()
             check(view.isWhole && view.pixelRect == full && !view.isDimmed && changes.isEmpty &&
-                  near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)) &&
-                  near(view.framedRect, bounds.insetBy(dx: 10, dy: 10)) &&
+                  near(view.bracketFrame, bounds.insetBy(dx: 22, dy: 22)) &&
+                  near(view.framedRect, bounds.insetBy(dx: 22, dy: 22)) &&
+                  abs(SelectionBrackets(around: bounds.insetBy(dx: 22, dy: 22)).outerRect.minX - 10) < 0.5 &&
                   view.toastText == OverlayView.wholeScreenHint && visibility == [false],
                   "Command-A frames the whole screen with corner brackets and no dimming, without searching it")
             visibility.removeAll()
@@ -159,7 +160,9 @@ enum NativeChecks {
             check(view.panelFrame.width == PanelSizing.defaultWidth(screenWidth: bounds.width) &&
                   view.panelFrame.width == 560, "the sheet is wide enough for Google's desktop layout (560 pt here)")
             let brackets = view.bracketFrame!
-            let handlePoints: [(SelectionHandle, CGPoint)] = SelectionHandle.allCases.map { ($0, $0.point(in: brackets)) }
+            // Grabbed where they are drawn: on the bracket line, just outside the framed area.
+            let drawn = SelectionBrackets(around: brackets).centreRect
+            let handlePoints: [(SelectionHandle, CGPoint)] = SelectionHandle.allCases.map { ($0, $0.point(in: drawn)) }
             check(handlePoints.allSatisfy { handle, point in
                 view.hitTest(point) === view && view.target(at: point) == .resize(handle)
             }, "all eight corner and edge handles stay reachable with the sheet shown")
@@ -169,7 +172,7 @@ enum NativeChecks {
 
             var passedThrough = false
             midDrag = { passedThrough = panel.passThrough && view.hitTest(inside) === view }
-            let edge = CGPoint(x: brackets.maxX, y: brackets.midY)
+            let edge = CGPoint(x: drawn.maxX, y: drawn.midY)
             gesture([edge, CGPoint(x: edge.x - 150, y: edge.y), CGPoint(x: 900, y: edge.y)], on: view)
             let resized = CGRect(x: 0, y: 0, width: 900 + bounds.maxX - edge.x, height: bounds.height)
             check(passedThrough && !panel.passThrough,
@@ -232,11 +235,11 @@ enum NativeChecks {
                 let outside = shot.luma(300, 300)
                 let within = shot.luma(Int(selected.midX), Int(selected.minY + selected.height * 0.12))
                 let circleColour = shot.rgb(Int(red.midX), Int(red.midY))
-                let bracket = Self.bracketPixels(selected, in: shot)
+                let bracket = Self.bracketSamples(selected, in: shot)
                 check(circleColour.r > 0.7 && circleColour.g < 0.45 && circleColour.b < 0.45,
                       "the rendered overlay is sampled the right way up")
-                check(bracket.luma > 0.9 && bracket.saturation < 0.03,
-                      "the circle snaps to plain white brackets on a tinted page (dimmest \(fmt(bracket.luma)), " +
+                check(bracket.ink > 0.75 && bracket.saturation < 0.03,
+                      "the circle snaps to plain light brackets on a tinted page (dimmest \(fmt(bracket.ink)), " +
                       "saturation \(fmt(bracket.saturation)))")
                 check(abs(outside / within - (1 - OverlayView.dimAlpha)) < 0.07,
                       "outside a smaller selection is dimmed by about 35% (\(fmt(outside / within)) of the brightness)")
@@ -889,21 +892,24 @@ enum NativeChecks {
 
     // MARK: - Selection frame
 
-    /// The Android-style frame on plain white and dark screens: four white corner brackets with a soft dark shadow,
-    /// live while a box is dragged and after release, with no colour, no edge line and no grip between them, and the
-    /// dimming outside. With a folder, writes the previews there.
+    /// The Android-style frame on plain white and dark screens: four thick, light corner brackets with flat ends,
+    /// sitting just outside the selection with a faint halo, live while a box is dragged and after release, with no
+    /// colour, no edge line and no grip between them, a rounded undimmed selection and the dimming outside. With a
+    /// folder, writes the previews there.
     private static func frameChecks(check: (Bool, String) -> Void, gesture: ([CGPoint], OverlayView) -> Void,
                                     midDrag: (@escaping () -> Void) -> Void, folder: URL?) throws {
         var subpaths = 0
-        LensFrameLayer.bracketPath(CGRect(x: 0, y: 0, width: 300, height: 200)).applyWithBlock {
+        let sample = CGRect(x: 0, y: 0, width: 300, height: 200)
+        LensFrameLayer.bracketPath(sample).applyWithBlock {
             if $0.pointee.type == .moveToPoint { subpaths += 1 }
         }
-        let small = [40, 60, 100, 300].map { CGRect(x: 0, y: 0, width: CGFloat($0), height: CGFloat($0) * 1.5) }
-        check(subpaths == 4 && LensFrameLayer.lineWidth == 5 && LensFrameLayer.cornerRadius == 14 &&
-              LensFrameLayer.armLength(for: small[3]) == 28 && LensFrameLayer.radius(for: small[3]) == 14 &&
-              small.allSatisfy { 2 * LensFrameLayer.armLength(for: $0) + LensFrameLayer.lineWidth < $0.width },
-              "the frame is four rounded 28 pt corner brackets, 5 pt wide, shortened on small selections so they " +
-              "never meet (40 pt: \(fmt(LensFrameLayer.armLength(for: small[0]))) pt arms)")
+        let bounding = LensFrameLayer.bracketPath(sample).boundingBoxOfPath
+        let centre = SelectionBrackets(around: sample).centreRect
+        check(subpaths == 4 && abs(bounding.minX - centre.minX) + abs(bounding.maxX - centre.maxX) +
+                abs(bounding.minY - centre.minY) + abs(bounding.maxY - centre.maxY) < 0.01 &&
+              LensFrameLayer.whiteness == 0.85 && LensFrameLayer.shadowOpacity == 0.2 && LensFrameLayer.shadowRadius == 2,
+              "the frame is four corner brackets on a line 4 pt plus half a stroke outside the selection, white at " +
+              "85% with a 20% black, 2 pt halo")
         let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
         for (name, shade) in [("white", CGFloat(1)), ("dark", CGFloat(0.1))] {
             let image = try drawn { size in
@@ -929,6 +935,13 @@ enum NativeChecks {
                 check(false, "on \(name), a dragged box becomes a selection that can be rendered")
                 continue
             }
+            let geometry = SelectionBrackets(around: rect)
+            let shape = view.frameLayer.sublayers?.first as? CAShapeLayer
+            check(shape?.lineCap == .butt && shape?.lineWidth == geometry.stroke && geometry.stroke == 8 &&
+                  geometry.radius == 28 && geometry.reach == 48,
+                  "on \(name), a \(Int(min(rect.width, rect.height))) pt tall box gets 8 pt flat-ended strokes, a 28 pt " +
+                  "radius and 48 pt reach " +
+                  "(6%, 18% and 28% of the shorter side, clamped)")
             let liveRect = live?.frame
             check(liveRect.map { $0.width > 400 && $0.height > 200 } == true && liveRect.map { abs($0.minX - rect.minX) + abs($0.maxX - rect.maxX) + abs($0.minY - rect.minY) +
                     abs($0.maxY - rect.maxY) < 2 } == true &&
@@ -936,33 +949,62 @@ enum NativeChecks {
                   "on \(name), the corner brackets frame a box live while it is dragged, undimmed and without ink, " +
                   "and stay put on release")
             if let liveRect, let liveShot = live?.shot {
-                let corners = cornerLuma(liveRect, in: liveShot)
-                let colour = saturation(around: liveRect, in: liveShot)
-                check(corners > 0.9 && colour < 0.05,
-                      "on \(name), the live brackets are white (\(fmt(corners))) with no colour (\(fmt(colour)))")
+                let ink = bracketSamples(liveRect, in: liveShot).ink
+                let colour = saturation(around: liveRect, in: liveShot, band: 18)
+                check(ink > 0.75 && colour < 0.05,
+                      "on \(name), the live brackets are light (\(fmt(ink))) with no colour (\(fmt(colour)))")
             }
             check(view.framedRect == rect && view.isDimmed, "on \(name), the released selection keeps its brackets")
             let page = shot.luma(60, 60)
             let inside = shot.luma(Int(rect.midX), Int(rect.midY))
-            let corners = cornerLuma(rect, in: shot)
-            let colour = saturation(around: rect, in: shot)
+            let samples = bracketSamples(rect, in: shot)
+            let colour = saturation(around: rect, in: shot, band: 18)
             let strays = edgeStrays(rect, in: shot, inside: inside, outside: page)
-            check(corners > 0.9, "on \(name), all four corners carry a white bracket (dimmest \(fmt(corners)))")
+            check(samples.ink > 0.75 && samples.ink - page > 0.2,
+                  "on \(name), all eight arms are drawn light (dimmest \(fmt(samples.ink)) on \(fmt(page)))")
+            check(samples.gap < samples.ink - 0.2 && abs(samples.gap - page) < 0.08,
+                  "on \(name), the brackets sit just outside the selection, leaving a 4 pt gap " +
+                  "(\(fmt(samples.gap)) beside the edge, page \(fmt(page)))")
+            check(samples.beyond < samples.ink - 0.2,
+                  "on \(name), the arms end flat, with nothing drawn past their ends (\(fmt(samples.beyond)))")
             check(colour < 0.05, "on \(name), there is no gradient or colour anywhere on the selection " +
                   "(saturation \(fmt(colour)))")
             check(strays == 0, "on \(name), nothing is drawn along the middle of the edges between the brackets " +
                   "(\(strays) stray pixels)")
-            let shadow = shadowLuma(rect, in: shot)
             if name == "white" {
-                check(shadow.inside < inside - 0.04 && shadow.outside < page - 0.04 && corners - shadow.outside > 0.3,
-                      "on white, a soft dark shadow outlines the white brackets (inside \(fmt(shadow.inside)) " +
-                      "of \(fmt(inside)), outside \(fmt(shadow.outside)) of the dimmed \(fmt(page)))")
+                let halo = page - samples.halo
+                check(halo > 0.005 && halo < 0.15 && samples.ink - page > 0.2,
+                      "on white, a faint dark halo (\(fmt(halo)) darker than the dimmed page) keeps the light " +
+                      "brackets legible")
+                // Along the top-left diagonal from the arcs' shared centre: just inside the hole's arc is undimmed,
+                // the 4 pt gap beyond it is dimmed and the bracket's arc beyond that covers the selection's corner.
+                let r = geometry.innerRadius
+                func diagonal(_ distance: CGFloat) -> CGFloat {
+                    shot.luma(Int((rect.minX + r - distance / 2.squareRoot()).rounded(.down)),
+                              Int((rect.maxY - r + distance / 2.squareRoot()).rounded(.down)))
+                }
+                let within = diagonal(r - 3), corner = diagonal(r + 2.5), arc = diagonal(r + SelectionBrackets.gap + 4)
+                let edge = shot.luma(Int(rect.minX) + 1, Int(rect.midY))
+                check(within > inside - 0.03 && edge > inside - 0.03 && abs(corner - page) < 0.06 && arc - page > 0.2,
+                      "on white, the selection is undimmed as a rounded rect concentric with the brackets " +
+                      "(\(fmt(r)) pt radius: \(fmt(within)) inside the arc, \(fmt(corner)) in the gap, \(fmt(arc)) " +
+                      "on the bracket)")
             } else {
-                check(corners - max(page, inside) > 0.6,
-                      "on dark, the white brackets stand out (\(fmt(corners)) on \(fmt(max(page, inside))))")
+                check(samples.ink < 0.93 && samples.ink - max(page, inside) > 0.6,
+                      "on dark, the brackets are light grey-white rather than pure white and stand out " +
+                      "(\(fmt(samples.ink)) on \(fmt(max(page, inside))))")
             }
             check(abs(page / inside - (1 - OverlayView.dimAlpha)) < 0.07 || name == "dark",
                   "on \(name), outside the selection is dimmed by about 35%")
+            let topLeft = geometry.corners[0]
+            let onArm = CGPoint(x: topLeft.point.x, y: topLeft.point.y + topLeft.dy * (geometry.arm - 6))
+            let onArc = CGPoint(x: topLeft.point.x + geometry.radius * 0.3, y: topLeft.point.y - geometry.radius * 0.3)
+            let edgeMiddle = CGPoint(x: geometry.centreRect.maxX, y: rect.midY)
+            check(view.target(at: onArm) == .resize(.topLeft) && view.target(at: onArc) == .resize(.topLeft) &&
+                  view.target(at: edgeMiddle) == .resize(.right) &&
+                  view.target(at: CGPoint(x: rect.midX, y: rect.midY)) == .move,
+                  "on \(name), grabbing a bracket along its arm resizes from that corner, the edge between them " +
+                  "still resizes and the inside still moves")
             if let folder, let preview = Self.snapshot(view, scale: 2) {
                 try write(preview, to: folder.appendingPathComponent("frame.corners.\(name).png"))
             }
@@ -978,34 +1020,38 @@ enum NativeChecks {
         }
     }
 
-    /// Points along each corner's two arms, just off the line's centre toward the outside, where the page would be
-    /// dimmed: the dimmest of the brightest pixels found, so every arm must be drawn white.
-    private static func cornerLuma(_ rect: CGRect, in bitmap: Bitmap) -> CGFloat { bracketPixels(rect, in: bitmap).luma }
-
-    /// The brightest pixel on each of the eight arms; returns the dimmest of them and the most saturated.
-    private static func bracketPixels(_ rect: CGRect, in bitmap: Bitmap) -> (luma: CGFloat, saturation: CGFloat) {
-        let reach = LensFrameLayer.armLength(for: rect) * 0.7
-        var dimmest: CGFloat = 1, saturation: CGFloat = 0
-        func brightest(_ points: [(Int, Int)]) {
-            guard let (x, y) = points.max(by: { bitmap.luma($0.0, $0.1) < bitmap.luma($1.0, $1.1) }) else { return }
-            let c = bitmap.rgb(x, y)
-            dimmest = min(dimmest, bitmap.luma(x, y))
-            saturation = max(saturation, max(c.r, c.g, c.b) - min(c.r, c.g, c.b))
+    /// Pixels around each of the eight arms, 6 pt before its flat end: the dimmest of the brightest pixels across
+    /// the stroke (`ink`), the brightest pixel in the gap 1.5 pt outside the selection (`gap`), the brightest
+    /// pixel 2.5 pt past each flat end (`beyond`), the darkest pixel 1.5 pt outside each stroke (`halo`) and the most
+    /// saturated of the ink pixels (`saturation`).
+    private static func bracketSamples(_ rect: CGRect, in bitmap: Bitmap)
+        -> (ink: CGFloat, gap: CGFloat, beyond: CGFloat, halo: CGFloat, saturation: CGFloat) {
+        let geometry = SelectionBrackets(around: rect)
+        let along = geometry.arm - 6
+        var ink: CGFloat = 1, gap: CGFloat = 0, beyond: CGFloat = 0, halo: CGFloat = 1, saturation: CGFloat = 0
+        func luma(_ point: CGPoint) -> CGFloat { bitmap.luma(Int(point.x.rounded(.down)), Int(point.y.rounded(.down))) }
+        for corner in geometry.corners {
+            let p = corner.point
+            // Each arm: its direction and the inward normal, toward the selection.
+            let arms: [(CGVector, CGVector)] = [(CGVector(dx: corner.dx, dy: 0), CGVector(dx: 0, dy: corner.dy)),
+                                                (CGVector(dx: 0, dy: corner.dy), CGVector(dx: corner.dx, dy: 0))]
+            for (direction, inward) in arms {
+                func at(_ distance: CGFloat, _ offset: CGFloat) -> CGPoint {
+                    CGPoint(x: p.x + direction.dx * distance + inward.dx * offset,
+                            y: p.y + direction.dy * distance + inward.dy * offset)
+                }
+                let across = (-1...1).map { at(along, CGFloat($0)) }
+                if let brightest = across.max(by: { luma($0) < luma($1) }) {
+                    let c = bitmap.rgb(Int(brightest.x.rounded(.down)), Int(brightest.y.rounded(.down)))
+                    ink = min(ink, luma(brightest))
+                    saturation = max(saturation, max(c.r, c.g, c.b) - min(c.r, c.g, c.b))
+                }
+                gap = max(gap, luma(at(along, geometry.outset - 1.5)))
+                beyond = max(beyond, (-1...1).map { luma(at(geometry.arm + 2.5, CGFloat($0))) }.max() ?? 1)
+                halo = min(halo, luma(at(along, -(geometry.stroke / 2 + 1.5))))
+            }
         }
-        for (x, y, dx, dy) in [(rect.minX, rect.maxY, 1.0, -1.0), (rect.maxX, rect.maxY, -1.0, -1.0),
-                               (rect.maxX, rect.minY, -1.0, 1.0), (rect.minX, rect.minY, 1.0, 1.0)] {
-            brightest((0...1).map { (Int(x + dx * reach), Int(y - dy * CGFloat($0))) })
-            brightest((0...1).map { (Int(x - dx * CGFloat($0)), Int(y + dy * reach)) })
-        }
-        return (dimmest, saturation)
-    }
-
-    /// The darkest pixels 4 to 5 pt beside the top-left bracket's horizontal arm, inside and outside the selection.
-    private static func shadowLuma(_ rect: CGRect, in bitmap: Bitmap) -> (inside: CGFloat, outside: CGFloat) {
-        let x = Int(rect.minX + LensFrameLayer.armLength(for: rect) * 0.6)
-        let inside = (4...5).map { bitmap.luma(x, Int(rect.maxY) - $0) }.min() ?? 1
-        let outside = (4...5).map { bitmap.luma(x, Int(rect.maxY) + $0) }.min() ?? 1
-        return (inside, outside)
+        return (ink, gap, beyond, halo, saturation)
     }
 
     /// The most saturated pixel in a band around `rect`'s border: 0 where everything is grey.
@@ -1022,15 +1068,18 @@ enum NativeChecks {
     }
 
     /// Pixels beside the middle of each edge, between the brackets, that are neither the page inside nor the dimmed
-    /// page outside: any edge line, grip, glow or halo there shows up as a stray.
+    /// page outside, out to past where the brackets are drawn: any edge line, grip, glow or halo there is a stray.
     private static func edgeStrays(_ rect: CGRect, in bitmap: Bitmap, inside: CGFloat, outside: CGFloat) -> Int {
-        let clear = LensFrameLayer.armLength(for: rect) + LensFrameLayer.lineWidth + 8
+        let geometry = SelectionBrackets(around: rect)
+        let clear = geometry.reach + 8
         var strays = 0
         func probe(_ x: CGFloat, _ y: CGFloat, inward: CGVector) {
             for distance in [2, 3, 4, 6, 9] as [CGFloat] {
                 let inner = bitmap.luma(Int(x + inward.dx * distance), Int(y + inward.dy * distance))
-                let outer = bitmap.luma(Int(x - inward.dx * distance), Int(y - inward.dy * distance))
                 if abs(inner - inside) > 0.03 { strays += 1 }
+            }
+            for distance in [2, 4, 6, 8, 10, 12, 14, 17] as [CGFloat] {
+                let outer = bitmap.luma(Int(x - inward.dx * distance), Int(y - inward.dy * distance))
                 if abs(outer - outside) > 0.03 { strays += 1 }
             }
         }

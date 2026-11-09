@@ -13,14 +13,13 @@ private let quietActions: [String: CAAction] = [
     "opacity": NSNull(), "hidden": NSNull(), "transform": NSNull(), "fillColor": NSNull()
 ]
 
-/// The selection framed the way Android's Circle to Search frames it: only four white, rounded corner brackets with a
-/// soft dark shadow so they stay visible on white pages. There is no colour, no connecting border and no edge grip.
+/// The selection framed the way Android's Circle to Search frames it: four thick, light corner brackets with flat
+/// ends on a large radius, sitting just outside the selected area, with a faint dark halo so they stay legible on white
+/// pages. There is no colour, no connecting border and no edge grip. Geometry comes from `SelectionBrackets`.
 final class LensFrameLayer: CALayer {
-    static let cornerRadius: CGFloat = 14
-    static let lineWidth: CGFloat = 5
-    static let arm: CGFloat = 28
-    static let shadowOpacity: Float = 0.35
-    static let shadowRadius: CGFloat = 3.5
+    static let whiteness: CGFloat = 0.85
+    static let shadowOpacity: Float = 0.2
+    static let shadowRadius: CGFloat = 2
 
     private let brackets = CAShapeLayer()
 
@@ -30,26 +29,30 @@ final class LensFrameLayer: CALayer {
     override init() {
         super.init()
         brackets.fillColor = nil
-        brackets.strokeColor = NSColor.white.cgColor
-        brackets.lineWidth = Self.lineWidth
-        brackets.lineCap = .round
+        brackets.strokeColor = NSColor.white.withAlphaComponent(Self.whiteness).cgColor
+        brackets.lineCap = .butt
         brackets.lineJoin = .round
         brackets.shadowColor = NSColor.black.cgColor
         brackets.shadowOpacity = Self.shadowOpacity
         brackets.shadowRadius = Self.shadowRadius
         brackets.shadowOffset = .zero
         addSublayer(brackets)
-        for layer in [self, brackets] { layer.actions = quietActions }
+        for layer in [self, brackets] { layer.actions = quietActions.merging(["lineWidth": NSNull()]) { $1 } }
         isHidden = true
     }
 
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// The stroke width currently drawn.
+    var lineWidth: CGFloat { brackets.lineWidth }
+
     func show(_ rect: CGRect) {
         self.rect = rect
+        let geometry = SelectionBrackets(around: rect)
         brackets.frame = bounds
-        brackets.path = Self.bracketPath(rect)
+        brackets.lineWidth = geometry.stroke
+        brackets.path = Self.bracketPath(geometry)
         isHidden = false
     }
 
@@ -61,40 +64,40 @@ final class LensFrameLayer: CALayer {
     /// The brackets grow from `from` to the current frame, as the circle morphs into the selection.
     func animateBrackets(from: CGRect, duration: CFTimeInterval) {
         guard let rect else { return }
+        let start = SelectionBrackets(around: from), end = SelectionBrackets(around: rect)
         let grow = CABasicAnimation(keyPath: "path")
-        grow.fromValue = Self.bracketPath(from)
-        grow.toValue = Self.bracketPath(rect)
-        grow.duration = duration
-        grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        brackets.add(grow, forKey: "grow")
+        grow.fromValue = Self.bracketPath(start)
+        grow.toValue = Self.bracketPath(end)
+        let width = CABasicAnimation(keyPath: "lineWidth")
+        width.fromValue = start.stroke
+        width.toValue = end.stroke
+        let group = CAAnimationGroup()
+        group.animations = [grow, width]
+        group.duration = duration
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        brackets.add(group, forKey: "grow")
     }
 
     // MARK: Paths
 
-    /// Each arm is about 28 pt, shortened on small selections so the two arms along an edge never meet.
-    static func armLength(for rect: CGRect) -> CGFloat {
-        let side = min(rect.width, rect.height)
-        return max(0, min(arm, side / 2 - max(4, side * 0.12)))
-    }
-
-    static func radius(for rect: CGRect) -> CGFloat {
-        max(0, min(cornerRadius, min(rect.width, rect.height) * 0.3, armLength(for: rect)))
-    }
-
+    /// The undimmed selection: a rounded rect concentric with the brackets' arcs.
     static func roundedPath(_ rect: CGRect) -> CGPath {
-        let radius = min(self.radius(for: rect), rect.width / 2, rect.height / 2)
-        return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
+        let radius = SelectionBrackets(around: rect).innerRadius
+        return CGPath(roundedRect: rect.standardized, cornerWidth: radius, cornerHeight: radius, transform: nil)
     }
 
-    /// Four rounded L brackets on the selection's corners, with a fixed element count so the path animates.
-    static func bracketPath(_ rect: CGRect) -> CGPath {
-        let arm = armLength(for: rect), radius = max(0.5, self.radius(for: rect))
+    static func bracketPath(_ rect: CGRect) -> CGPath { bracketPath(SelectionBrackets(around: rect)) }
+
+    /// Four quarter arcs, each with a short straight arm on both sides ending flat, with a fixed element count so the
+    /// path animates.
+    static func bracketPath(_ geometry: SelectionBrackets) -> CGPath {
         let path = CGMutablePath()
-        for (x, y, dx, dy) in [(rect.minX, rect.maxY, 1.0, -1.0), (rect.maxX, rect.maxY, -1.0, -1.0),
-                               (rect.maxX, rect.minY, -1.0, 1.0), (rect.minX, rect.minY, 1.0, 1.0)] {
-            path.move(to: CGPoint(x: x, y: y + dy * arm))
-            path.addArc(tangent1End: CGPoint(x: x, y: y), tangent2End: CGPoint(x: x + dx * arm, y: y), radius: radius)
-            path.addLine(to: CGPoint(x: x + dx * arm, y: y))
+        let arm = geometry.arm
+        for corner in geometry.corners {
+            let p = corner.point
+            path.move(to: CGPoint(x: p.x, y: p.y + corner.dy * arm))
+            path.addArc(tangent1End: p, tangent2End: CGPoint(x: p.x + corner.dx * arm, y: p.y), radius: geometry.radius)
+            path.addLine(to: CGPoint(x: p.x + corner.dx * arm, y: p.y))
         }
         return path
     }

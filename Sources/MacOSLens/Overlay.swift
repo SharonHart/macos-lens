@@ -402,7 +402,8 @@ final class OverlayView: NSView {
 
     var bracketFrame: CGRect? {
         guard let selection else { return nil }
-        return isWhole ? bounds.insetBy(dx: 10, dy: 10) : selection
+        // The whole screen's brackets, drawn just outside this frame, end about 10 pt from the screen's edges.
+        return isWhole ? bounds.insetBy(dx: 22, dy: 22) : selection
     }
 
     var isDimmed: Bool { !dimLayer.isHidden }
@@ -851,6 +852,10 @@ final class OverlayView: NSView {
 
     func target(at point: CGPoint) -> SelectionDrag {
         let grab = grabTarget
+        // The brackets sit just outside the selection; grabbing one anywhere along its arms resizes from that corner.
+        if let frame = grab.selection, let corner = SelectionBrackets(around: frame).corner(at: point) {
+            return .resize(corner)
+        }
         return SelectionEditor.target(at: point, selection: grab.selection, bounds: grab.limit, tolerance: 18)
     }
 

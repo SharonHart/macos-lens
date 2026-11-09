@@ -103,3 +103,66 @@ public enum SelectionEditor {
                width: unit.width * canvas.width, height: unit.height * canvas.height)
     }
 }
+
+/// The Circle to Search corner brackets around a selection: four thick, flat-ended rounded L's that sit just outside
+/// the selected area, sized from its shorter side. The selected area itself is undimmed as a concentric rounded rect.
+public struct SelectionBrackets: Equatable, Sendable {
+    /// Space between a bracket's inner edge and the selected area.
+    public static let gap: CGFloat = 4
+
+    public let selection: CGRect
+    /// Stroke width: 6% of the shorter side, 5–8 pt.
+    public let stroke: CGFloat
+    /// Distance from a bracket's outer corner to the flat end of each arm: 28% of the shorter side, 20–48 pt,
+    /// shortened on small selections so the two arms along an edge never meet.
+    public let reach: CGFloat
+    /// Centre-line radius of each bracket's quarter arc: 18% of the shorter side, 14–28 pt, leaving a short straight
+    /// run before each flat end.
+    public let radius: CGFloat
+
+    public init(around selection: CGRect) {
+        let rect = selection.standardized
+        self.selection = rect
+        let side = max(0, min(rect.width, rect.height))
+        func clamp(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat) -> CGFloat { min(max(value, low), high) }
+        stroke = clamp(side * 0.06, 5, 8)
+        let outer = side + 2 * (Self.gap + stroke)
+        reach = max(stroke, min(clamp(side * 0.28, 20, 48), outer / 2 - max(4, outer * 0.12)))
+        radius = max(0.5, min(clamp(side * 0.18, 14, 28), (reach - stroke / 2) * 0.85))
+    }
+
+    /// How far the strokes' centre line sits outside the selection.
+    public var outset: CGFloat { Self.gap + stroke / 2 }
+    /// The rectangle the strokes are centred on.
+    public var centreRect: CGRect { selection.insetBy(dx: -outset, dy: -outset) }
+    /// Everything the brackets cover.
+    public var outerRect: CGRect { selection.insetBy(dx: -(Self.gap + stroke), dy: -(Self.gap + stroke)) }
+    /// Radius of the undimmed selection, concentric with the brackets' arcs.
+    public var innerRadius: CGFloat {
+        max(0, min(radius - outset, selection.width / 2, selection.height / 2))
+    }
+
+    /// Each corner as its sharp centre-line point and the directions its two arms run in, in `SelectionHandle` order.
+    public var corners: [(handle: SelectionHandle, point: CGPoint, dx: CGFloat, dy: CGFloat)] {
+        let rect = centreRect
+        return [(.topLeft, CGPoint(x: rect.minX, y: rect.maxY), 1, -1), (.topRight, CGPoint(x: rect.maxX, y: rect.maxY), -1, -1),
+                (.bottomRight, CGPoint(x: rect.maxX, y: rect.minY), -1, 1), (.bottomLeft, CGPoint(x: rect.minX, y: rect.minY), 1, 1)]
+    }
+
+    /// Length of each arm along the centre line, from the sharp corner point to the flat end.
+    public var arm: CGFloat { reach - stroke / 2 }
+
+    /// The corner whose bracket is under `point`, within `slop` points of its stroke.
+    public func corner(at point: CGPoint, slop: CGFloat = 10) -> SelectionHandle? {
+        let width = stroke / 2 + slop
+        for corner in corners {
+            let end = CGPoint(x: corner.point.x + corner.dx * arm, y: corner.point.y + corner.dy * arm)
+            let alongX = (min(corner.point.x, end.x) - width...max(corner.point.x, end.x) + width).contains(point.x)
+            let alongY = (min(corner.point.y, end.y) - width...max(corner.point.y, end.y) + width).contains(point.y)
+            if (alongX && abs(point.y - corner.point.y) <= width) || (alongY && abs(point.x - corner.point.x) <= width) {
+                return corner.handle
+            }
+        }
+        return nil
+    }
+}

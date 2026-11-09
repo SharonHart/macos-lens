@@ -194,6 +194,37 @@ final class LensCoreTests {
         XCTAssertEqual(SelectionEditor.target(at: CGPoint(x: 200, y: 150), selection: nil, bounds: canvas), .draw)
     }
 
+    func testSelectionBracketsFollowTheReference() {
+        let big = SelectionBrackets(around: CGRect(x: 100, y: 100, width: 600, height: 400))
+        XCTAssertEqual(big.stroke, 8, "6% of 400 is clamped to 8 pt")
+        XCTAssertEqual(big.reach, 48, "28% of 400 is clamped to 48 pt")
+        XCTAssertEqual(big.radius, 28, "18% of 400 is clamped to 28 pt")
+        XCTAssertEqual(big.outset, 8, "4 pt gap plus half the stroke")
+        XCTAssertEqual(big.centreRect, CGRect(x: 92, y: 92, width: 616, height: 416))
+        XCTAssertEqual(big.outerRect, CGRect(x: 88, y: 88, width: 624, height: 424))
+        XCTAssertEqual(big.innerRadius, 20, "concentric with the arcs")
+        let mid = SelectionBrackets(around: CGRect(x: 0, y: 0, width: 300, height: 120))
+        XCTAssertTrue(abs(mid.stroke - 7.2) < 0.001 && abs(mid.reach - 33.6) < 0.001 && abs(mid.radius - 21.6) < 0.001,
+                      "a 120 pt side scales: \(mid.stroke), \(mid.reach), \(mid.radius)")
+        let small = SelectionBrackets(around: CGRect(x: 0, y: 0, width: 60, height: 40))
+        XCTAssertEqual(small.stroke, 5)
+        XCTAssertEqual(small.reach, 20)
+        XCTAssertEqual(small.radius, 14)
+        for side in [16, 24, 40, 60, 100, 400] as [CGFloat] {
+            let brackets = SelectionBrackets(around: CGRect(x: 0, y: 0, width: side, height: side * 1.5))
+            let outer = brackets.outerRect.width
+            XCTAssertTrue(2 * brackets.reach < outer - 4, "arms along a \(side) pt edge never meet")
+            XCTAssertTrue(brackets.radius < brackets.arm, "a \(side) pt selection keeps a straight run after the arc")
+            XCTAssertTrue(brackets.stroke >= 5 && brackets.stroke <= 8 && brackets.innerRadius >= 0)
+        }
+        // Grabbing a bracket resizes from its corner; the gap inside it and the middle of an edge do not.
+        XCTAssertEqual(big.corner(at: CGPoint(x: 92, y: 508)), .topLeft)
+        XCTAssertEqual(big.corner(at: CGPoint(x: 92, y: 508 - 35)), .topLeft, "anywhere along the vertical arm")
+        XCTAssertEqual(big.corner(at: CGPoint(x: 708 - 35, y: 92)), .bottomRight, "anywhere along the horizontal arm")
+        XCTAssertEqual(big.corner(at: CGPoint(x: 86, y: 300)), nil, "the middle of an edge is not a corner")
+        XCTAssertEqual(big.corner(at: CGPoint(x: 160, y: 440)), nil, "inside, away from the bracket")
+    }
+
     func testHandleResizeClampsToCanvasAndMinimum() {
         let rect = CGRect(x: 100, y: 100, width: 200, height: 100)
         XCTAssertEqual(SelectionEditor.resize(rect, handle: .right, by: CGVector(dx: 50, dy: 80), in: canvas),
@@ -1240,6 +1271,7 @@ let cases: [(String, () throws -> Void)] = [
     ("Lens browser handoff page", tests.testLensHandoffPage),
     ("Text shortcut avoids conflicts", tests.testTextShortcutAvoidsConflicts),
     ("handle tolerance is adjustable", tests.testHandleToleranceIsAdjustable),
+    ("selection brackets follow the reference", tests.testSelectionBracketsFollowTheReference),
     ("support link comes from Info.plist", tests.testSupportLinkComesFromInfoPlist),
     ("translation is distributed over lines", tests.testTranslationIsDistributedOverLines),
     ("gesture: taps, double, triple and shift clicks", tests.testGesturePressesOnWordsAndElsewhere),
