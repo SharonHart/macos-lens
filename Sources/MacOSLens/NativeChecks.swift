@@ -117,7 +117,7 @@ enum NativeChecks {
             // Activation: the frozen screen fills the display 1:1 with only the Android-style controls on top.
             check(view.canvas == bounds && image.width == Int(bounds.width) * 2 && view.layer?.backgroundColor?.alpha == 0,
                   "the Retina screenshot fills the display exactly, with no border, inset or scaling")
-            check(view.isWhole && view.pixelRect == full && !view.isDimmed && view.outlineFrame == nil &&
+            check(view.isWhole && view.pixelRect == full && !view.isDimmed &&
                   near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)) &&
                   near(view.framedRect, bounds.insetBy(dx: 10, dy: 10)),
                   "the whole screen starts selected, shown as corner brackets with no border or dimming")
@@ -204,38 +204,33 @@ enum NativeChecks {
                 return CGPoint(x: red.midX + cos(angle) * 85, y: red.midY + sin(angle) * 85)
             }
             var inked: CGRect?
-            var liveOutline: CGRect?
-            var liveHues: Set<String> = []
+            var liveFrame: CGRect?
             var dimmedWhileDrawing = true
             midDrag = {
                 inked = view.inkBounds
-                liveOutline = view.outlineFrame
+                liveFrame = view.framedRect
                 dimmedWhileDrawing = view.isDimmed
-                if let live = liveOutline, let shot = Self.snapshot(view).flatMap(Bitmap.init) {
-                    liveHues = Self.googleHues(along: live, in: shot)
-                }
             }
             gesture(circle, on: view)
             check(inked.map { $0.width > 160 && $0.height > 160 } == true && view.inkBounds == nil,
                   "circling draws glowing ink that disappears when the finger lifts")
-            check(liveOutline.map { $0.width > 160 && $0.height > 160 && $0.contains(red) } == true &&
-                  !dimmedWhileDrawing && liveHues.count >= 3,
-                  "the Lens frame, in Google colours (\(liveHues.sorted().joined(separator: ", "))), follows the " +
-                  "area while it is being drawn")
+            check(liveFrame == nil && !dimmedWhileDrawing,
+                  "a freehand circle shows only its white ink while it is drawn, with no brackets or dimming")
             check(view.selection.map { $0.contains(red) && $0.width < 200 } == true &&
-                  near(view.bracketFrame, view.selection!) && near(view.outlineFrame, view.selection!, 1) &&
+                  near(view.bracketFrame, view.selection!) && near(view.framedRect, view.selection!, 1) &&
                   view.isDimmed && changes.last?.1 == false && !view.hasTextSelection,
-                  "a circle around a picture becomes a framed selection that is searched visually")
+                  "a circle around a picture snaps to corner brackets on release and is searched visually")
             if let shot = Self.snapshot(view).flatMap(Bitmap.init) {
                 let selected = view.selection!
                 let outside = shot.luma(300, 300)
                 let within = shot.luma(Int(selected.midX), Int(selected.minY + selected.height * 0.12))
                 let circleColour = shot.rgb(Int(red.midX), Int(red.midY))
-                let hues = Self.googleHues(along: selected, in: shot)
+                let bracket = Self.bracketPixels(selected, in: shot)
                 check(circleColour.r > 0.7 && circleColour.g < 0.45 && circleColour.b < 0.45,
                       "the rendered overlay is sampled the right way up")
-                check(hues.count >= 3, "the released selection keeps the Google gradient border, brackets and grips " +
-                      "(\(hues.sorted().joined(separator: ", ")))")
+                check(bracket.luma > 0.9 && bracket.saturation < 0.03,
+                      "the circle snaps to plain white brackets on a tinted page (dimmest \(fmt(bracket.luma)), " +
+                      "saturation \(fmt(bracket.saturation)))")
                 check(abs(outside / within - (1 - OverlayView.dimAlpha)) < 0.07,
                       "outside a smaller selection is dimmed by about 35% (\(fmt(outside / within)) of the brightness)")
             } else {
@@ -825,11 +820,21 @@ enum NativeChecks {
 
     // MARK: - Selection frame
 
-    /// The Lens-style frame on plain white and dark screens: the Google gradient border while drawing and after
-    /// release, its dark halo on white, the dimming outside, and its slow turn unless Reduce Motion is on. With a
-    /// folder, writes the previews there.
+    /// The Android-style frame on plain white and dark screens: four white corner brackets with a soft dark shadow,
+    /// live while a box is dragged and after release, with no colour, no edge line and no grip between them, and the
+    /// dimming outside. With a folder, writes the previews there.
     private static func frameChecks(check: (Bool, String) -> Void, gesture: ([CGPoint], OverlayView) -> Void,
                                     midDrag: (@escaping () -> Void) -> Void, folder: URL?) throws {
+        var subpaths = 0
+        LensFrameLayer.bracketPath(CGRect(x: 0, y: 0, width: 300, height: 200)).applyWithBlock {
+            if $0.pointee.type == .moveToPoint { subpaths += 1 }
+        }
+        let small = [40, 60, 100, 300].map { CGRect(x: 0, y: 0, width: CGFloat($0), height: CGFloat($0) * 1.5) }
+        check(subpaths == 4 && LensFrameLayer.lineWidth == 5 && LensFrameLayer.cornerRadius == 14 &&
+              LensFrameLayer.armLength(for: small[3]) == 28 && LensFrameLayer.radius(for: small[3]) == 14 &&
+              small.allSatisfy { 2 * LensFrameLayer.armLength(for: $0) + LensFrameLayer.lineWidth < $0.width },
+              "the frame is four rounded 28 pt corner brackets, 5 pt wide, shortened on small selections so they " +
+              "never meet (40 pt: \(fmt(LensFrameLayer.armLength(for: small[0]))) pt arms)")
         let size = NSRect(x: 0, y: 0, width: 1200, height: 700)
         for (name, shade) in [("white", CGFloat(1)), ("dark", CGFloat(0.1))] {
             let image = try drawn { size in
@@ -843,92 +848,133 @@ enum NativeChecks {
                                    controls: true, actions: OverlayActions())
             window.contentView = view
             view.layoutSubtreeIfNeeded()
-            var live: (frame: CGRect?, dimmed: Bool, hues: Set<String>)?
+            check(view.frameLayer.sublayers?.count == 1, "on \(name), the frame is a single layer of brackets")
+            var live: (frame: CGRect?, dimmed: Bool, ink: CGRect?, shot: Bitmap?)?
             midDrag {
-                let shot = Self.snapshot(view).flatMap(Bitmap.init)
-                let frame = view.outlineFrame
-                live = (frame, view.isDimmed, frame.flatMap { rect in shot.map { googleHues(along: rect, in: $0) } } ?? [])
+                live = (view.framedRect, view.isDimmed, view.inkBounds, Self.snapshot(view).flatMap(Bitmap.init))
                 if let folder, let preview = Self.snapshot(view, scale: 2) {
-                    try? write(preview, to: folder.appendingPathComponent("frame.live.\(name).png"))
+                    try? write(preview, to: folder.appendingPathComponent("frame.corners.live.\(name).png"))
                 }
             }
             gesture([CGPoint(x: 360, y: 220), CGPoint(x: 600, y: 360), CGPoint(x: 840, y: 470)], view)
-            check(live?.frame.map { $0.width > 400 && $0.height > 200 } == true && live?.dimmed == false &&
-                  (live?.hues.count ?? 0) >= 3,
-                  "on \(name), the gradient frame follows a box while it is dragged, undimmed " +
-                  "(\((live?.hues ?? []).sorted().joined(separator: ", ")))")
             guard let rect = view.selection, let shot = Self.snapshot(view).flatMap(Bitmap.init) else {
                 check(false, "on \(name), a dragged box becomes a selection that can be rendered")
                 continue
             }
-            let hues = googleHues(along: rect, in: shot)
-            check(hues.count >= 3 && view.outlineFrame == rect && view.isDimmed,
-                  "on \(name), the released selection has a Google-coloured border, brackets and grips " +
-                  "(\(hues.sorted().joined(separator: ", ")))")
-            let y = Int(rect.midY + 60)
-            let halo = (2...4).map { shot.luma(Int(rect.minX) - $0, y) }.min() ?? 1
+            let liveRect = live?.frame
+            check(liveRect.map { $0.width > 400 && $0.height > 200 } == true && liveRect.map { abs($0.minX - rect.minX) + abs($0.maxX - rect.maxX) + abs($0.minY - rect.minY) +
+                    abs($0.maxY - rect.maxY) < 2 } == true &&
+                  live?.dimmed == false && live?.ink == nil,
+                  "on \(name), the corner brackets frame a box live while it is dragged, undimmed and without ink, " +
+                  "and stay put on release")
+            if let liveRect, let liveShot = live?.shot {
+                let corners = cornerLuma(liveRect, in: liveShot)
+                let colour = saturation(around: liveRect, in: liveShot)
+                check(corners > 0.9 && colour < 0.05,
+                      "on \(name), the live brackets are white (\(fmt(corners))) with no colour (\(fmt(colour)))")
+            }
+            check(view.framedRect == rect && view.isDimmed, "on \(name), the released selection keeps its brackets")
             let page = shot.luma(60, 60)
             let inside = shot.luma(Int(rect.midX), Int(rect.midY))
+            let corners = cornerLuma(rect, in: shot)
+            let colour = saturation(around: rect, in: shot)
+            let strays = edgeStrays(rect, in: shot, inside: inside, outside: page)
+            check(corners > 0.9, "on \(name), all four corners carry a white bracket (dimmest \(fmt(corners)))")
+            check(colour < 0.05, "on \(name), there is no gradient or colour anywhere on the selection " +
+                  "(saturation \(fmt(colour)))")
+            check(strays == 0, "on \(name), nothing is drawn along the middle of the edges between the brackets " +
+                  "(\(strays) stray pixels)")
+            let shadow = shadowLuma(rect, in: shot)
             if name == "white" {
-                check(halo < page - 0.15 && inside > 0.95,
-                      "on white, a dark halo keeps the frame visible (halo \(fmt(halo)), dimmed page \(fmt(page)))")
+                check(shadow.inside < inside - 0.04 && shadow.outside < page - 0.04 && corners - shadow.outside > 0.3,
+                      "on white, a soft dark shadow outlines the white brackets (inside \(fmt(shadow.inside)) " +
+                      "of \(fmt(inside)), outside \(fmt(shadow.outside)) of the dimmed \(fmt(page)))")
             } else {
-                let line = (-1...1).map { shot.luma(Int(rect.minX) + $0, y) }.max() ?? 0
-                check(line > page + 0.25, "on dark, the gradient line stands out (line \(fmt(line)), page \(fmt(page)))")
+                check(corners - max(page, inside) > 0.6,
+                      "on dark, the white brackets stand out (\(fmt(corners)) on \(fmt(max(page, inside))))")
             }
             check(abs(page / inside - (1 - OverlayView.dimAlpha)) < 0.07 || name == "dark",
                   "on \(name), outside the selection is dimmed by about 35%")
             if let folder, let preview = Self.snapshot(view, scale: 2) {
-                try write(preview, to: folder.appendingPathComponent("frame.after.\(name).png"))
+                try write(preview, to: folder.appendingPathComponent("frame.corners.\(name).png"))
             }
-            check(!view.frameLayer.isSpinning, "on \(name), the gradient stands still with Reduce Motion (or animation) off")
             OverlayView.animates = true
             view.needsLayout = true
             view.layoutSubtreeIfNeeded()
-            let reduce = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            check(view.frameLayer.isSpinning == !reduce && LensFrameLayer.turn == 6,
-                  "on \(name), the gradient turns once every 6 s unless Reduce Motion is on (Reduce Motion \(reduce))")
+            let layers = [view.frameLayer] + (view.frameLayer.sublayers ?? [])
+            check(layers.allSatisfy { $0.animationKeys() == nil },
+                  "on \(name), the brackets stand still once settled, with no rotation")
             OverlayView.animates = false
             view.needsLayout = true
             view.layoutSubtreeIfNeeded()
         }
     }
 
-    /// The Google colours found along the straight parts of `rect`'s border in `bitmap`, one pixel per point.
-    private static func googleHues(along rect: CGRect, in bitmap: Bitmap) -> Set<String> {
-        var found = Set<String>()
-        func sample(_ x: CGFloat, _ y: CGFloat, horizontal: Bool) {
-            var best: (saturation: CGFloat, hue: CGFloat)?
-            for offset in -2...2 {
-                let px = Int((horizontal ? x : x + CGFloat(offset)).rounded(.down))
-                let py = Int((horizontal ? y + CGFloat(offset) : y).rounded(.down))
-                let c = bitmap.rgb(px, py)
-                let high = max(c.r, c.g, c.b), low = min(c.r, c.g, c.b)
-                guard high > 0.25, (high - low) / high > (best?.saturation ?? 0.4) else { continue }
-                let spread = high - low
-                var hue = high == c.r ? (c.g - c.b) / spread : high == c.g ? 2 + (c.b - c.r) / spread : 4 + (c.r - c.g) / spread
-                hue = (hue * 60 + 360).truncatingRemainder(dividingBy: 360)
-                best = ((high - low) / high, hue)
-            }
-            switch best?.hue ?? -1 {
-            case 0..<22, 330..<360: found.insert("red")
-            case 35..<70: found.insert("yellow")
-            case 85..<170: found.insert("green")
-            case 195..<250: found.insert("blue")
-            default: break
+    /// Points along each corner's two arms, just off the line's centre toward the outside, where the page would be
+    /// dimmed: the dimmest of the brightest pixels found, so every arm must be drawn white.
+    private static func cornerLuma(_ rect: CGRect, in bitmap: Bitmap) -> CGFloat { bracketPixels(rect, in: bitmap).luma }
+
+    /// The brightest pixel on each of the eight arms; returns the dimmest of them and the most saturated.
+    private static func bracketPixels(_ rect: CGRect, in bitmap: Bitmap) -> (luma: CGFloat, saturation: CGFloat) {
+        let reach = LensFrameLayer.armLength(for: rect) * 0.7
+        var dimmest: CGFloat = 1, saturation: CGFloat = 0
+        func brightest(_ points: [(Int, Int)]) {
+            guard let (x, y) = points.max(by: { bitmap.luma($0.0, $0.1) < bitmap.luma($1.0, $1.1) }) else { return }
+            let c = bitmap.rgb(x, y)
+            dimmest = min(dimmest, bitmap.luma(x, y))
+            saturation = max(saturation, max(c.r, c.g, c.b) - min(c.r, c.g, c.b))
+        }
+        for (x, y, dx, dy) in [(rect.minX, rect.maxY, 1.0, -1.0), (rect.maxX, rect.maxY, -1.0, -1.0),
+                               (rect.maxX, rect.minY, -1.0, 1.0), (rect.minX, rect.minY, 1.0, 1.0)] {
+            brightest((0...1).map { (Int(x + dx * reach), Int(y - dy * CGFloat($0))) })
+            brightest((0...1).map { (Int(x - dx * CGFloat($0)), Int(y + dy * reach)) })
+        }
+        return (dimmest, saturation)
+    }
+
+    /// The darkest pixels 4 to 5 pt beside the top-left bracket's horizontal arm, inside and outside the selection.
+    private static func shadowLuma(_ rect: CGRect, in bitmap: Bitmap) -> (inside: CGFloat, outside: CGFloat) {
+        let x = Int(rect.minX + LensFrameLayer.armLength(for: rect) * 0.6)
+        let inside = (4...5).map { bitmap.luma(x, Int(rect.maxY) - $0) }.min() ?? 1
+        let outside = (4...5).map { bitmap.luma(x, Int(rect.maxY) + $0) }.min() ?? 1
+        return (inside, outside)
+    }
+
+    /// The most saturated pixel in a band around `rect`'s border: 0 where everything is grey.
+    private static func saturation(around rect: CGRect, in bitmap: Bitmap, band: CGFloat = 12) -> CGFloat {
+        let outer = rect.insetBy(dx: -band, dy: -band), inner = rect.insetBy(dx: band, dy: band)
+        var worst: CGFloat = 0
+        for y in Int(outer.minY)...Int(outer.maxY) {
+            for x in Int(outer.minX)...Int(outer.maxX) where !inner.contains(CGPoint(x: x, y: y)) {
+                let c = bitmap.rgb(x, y)
+                worst = max(worst, max(c.r, c.g, c.b) - min(c.r, c.g, c.b))
             }
         }
-        let inset = LensFrameLayer.cornerRadius + 2
-        for step in 0...16 {
-            let t = CGFloat(step) / 16
-            let x = rect.minX + inset + (rect.width - 2 * inset) * t
-            let y = rect.minY + inset + (rect.height - 2 * inset) * t
-            sample(x, rect.minY, horizontal: true)
-            sample(x, rect.maxY, horizontal: true)
-            sample(rect.minX, y, horizontal: false)
-            sample(rect.maxX, y, horizontal: false)
+        return worst
+    }
+
+    /// Pixels beside the middle of each edge, between the brackets, that are neither the page inside nor the dimmed
+    /// page outside: any edge line, grip, glow or halo there shows up as a stray.
+    private static func edgeStrays(_ rect: CGRect, in bitmap: Bitmap, inside: CGFloat, outside: CGFloat) -> Int {
+        let clear = LensFrameLayer.armLength(for: rect) + LensFrameLayer.lineWidth + 8
+        var strays = 0
+        func probe(_ x: CGFloat, _ y: CGFloat, inward: CGVector) {
+            for distance in [2, 3, 4, 6, 9] as [CGFloat] {
+                let inner = bitmap.luma(Int(x + inward.dx * distance), Int(y + inward.dy * distance))
+                let outer = bitmap.luma(Int(x - inward.dx * distance), Int(y - inward.dy * distance))
+                if abs(inner - inside) > 0.03 { strays += 1 }
+                if abs(outer - outside) > 0.03 { strays += 1 }
+            }
         }
-        return found
+        for x in stride(from: rect.minX + clear, through: rect.maxX - clear, by: 3) {
+            probe(x, rect.maxY, inward: CGVector(dx: 0, dy: -1))
+            probe(x, rect.minY, inward: CGVector(dx: 0, dy: 1))
+        }
+        for y in stride(from: rect.minY + clear, through: rect.maxY - clear, by: 3) {
+            probe(rect.minX, y, inward: CGVector(dx: 1, dy: 0))
+            probe(rect.maxX, y, inward: CGVector(dx: -1, dy: 0))
+        }
+        return strays
     }
 
     // MARK: - Mark

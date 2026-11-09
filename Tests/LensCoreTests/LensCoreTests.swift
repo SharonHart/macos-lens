@@ -429,6 +429,40 @@ final class LensCoreTests {
         XCTAssertTrue(!SelectionEditor.isTap([CGPoint(x: 10, y: 10), CGPoint(x: 30, y: 10)]))
         XCTAssertTrue(!SelectionEditor.isTap([]))
 
+        func arc(radius: CGFloat, from start: CGFloat = 0, to degrees: CGFloat) -> [CGPoint] {
+            stride(from: start, through: start + degrees, by: 3).map { (angle: CGFloat) -> CGPoint in
+                let radians = angle * .pi / 180
+                return CGPoint(x: 400 + radius * sin(radians), y: 300 + radius * cos(radians))
+            }
+        }
+        let diagonal = stride(from: CGFloat(0), through: 1, by: 0.05).map { (t: CGFloat) -> CGPoint in
+            let wobble: CGFloat = 3 * sin(t * 12)
+            return CGPoint(x: 100 + 300 * t, y: 100 + 180 * t + wobble)
+        }
+        XCTAssertEqual(SelectionEditor.drawShape(diagonal), .box, "a slightly wobbly diagonal drag frames a box live")
+        XCTAssertEqual(SelectionEditor.drawShape(diagonal.reversed()), .box, "in any direction")
+        XCTAssertEqual(SelectionEditor.drawShape(Array(diagonal.prefix(2))), .undecided, "too short to tell yet")
+        XCTAssertEqual(SelectionEditor.drawShape(highlight), .undecided, "a flat highlight stays ink")
+        XCTAssertEqual(SelectionEditor.drawShape(arc(radius: 150, to: 360)), .freehand, "a closed circle is freehand")
+        for radius in [CGFloat(60), 100, 150] { for start in stride(from: CGFloat(0), to: 360, by: 45) {
+            let ring = arc(radius: radius, from: start, to: 360)
+            let shapes: [SelectionEditor.DrawShape] = (2...ring.count).map {
+                SelectionEditor.drawShape(Array(ring.prefix($0)))
+            }
+            XCTAssertTrue(!shapes.contains(SelectionEditor.DrawShape.box) &&
+                          shapes.last == SelectionEditor.DrawShape.freehand,
+                          "a circle of radius \(radius) started at \(start)° never frames a box while it is drawn")
+        } }
+        for start in stride(from: CGFloat(0), to: 360, by: 45) {
+            let large = arc(radius: 300, from: start, to: 360)
+            let bent = (2...large.count).first { SelectionEditor.drawShape(Array(large.prefix($0))) == .freehand }
+            XCTAssertTrue(bent.map { $0 <= 8 } == true,
+                          "a large circle started at \(start)° reads as freehand within its first 21° of arc")
+        }
+        XCTAssertEqual(SelectionEditor.drawShape(circle), .freehand)
+        let scribble = (0..<12).map { CGPoint(x: 200 + CGFloat($0) * 15, y: $0.isMultiple(of: 2) ? 200 : 240) }
+        XCTAssertEqual(SelectionEditor.drawShape(scribble), .freehand, "a scribble is freehand")
+
         let line = CGRect(x: 100, y: 100, width: 300, height: 30)
         let word = CGRect(x: 120, y: 102, width: 60, height: 26)
         let object = CGRect(x: 500, y: 200, width: 120, height: 120)

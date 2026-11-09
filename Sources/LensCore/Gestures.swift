@@ -53,6 +53,29 @@ public extension SelectionEditor {
         return points.allSatisfy { hypot($0.x - first.x, $0.y - first.y) <= tolerance }
     }
 
+    /// How a stroke being drawn reads so far: a straight diagonal drag frames a box live, anything that bends is
+    /// freehand ink (a circle, scribble or highlight), and a short or flat stroke is not decided yet.
+    enum DrawShape: Equatable, Sendable { case undecided, box, freehand }
+
+    static func drawShape(_ points: [CGPoint], minimumSide: CGFloat = 20, minimumLength: CGFloat = 64,
+                          straightness: CGFloat = 0.04) -> DrawShape {
+        guard let first = points.first, let last = points.last else { return .undecided }
+        var minX = first.x, maxX = first.x, minY = first.y, maxY = first.y
+        for point in points {
+            minX = min(minX, point.x); maxX = max(maxX, point.x)
+            minY = min(minY, point.y); maxY = max(maxY, point.y)
+        }
+        let dx = last.x - first.x, dy = last.y - first.y, chord = hypot(dx, dy)
+        let limit = max(3, chord * straightness)
+        let bend = points.reduce(CGFloat(0)) { worst, point in
+            let offset = chord > 0 ? abs((point.x - first.x) * dy - (point.y - first.y) * dx) / chord
+                : hypot(point.x - first.x, point.y - first.y)
+            return max(worst, offset)
+        }
+        if max(maxX - minX, maxY - minY) >= 24, bend > limit { return .freehand }
+        return chord >= minimumLength && abs(dx) >= minimumSide && abs(dy) >= minimumSide ? .box : .undecided
+    }
+
     /// The area a circle, highlight or scribble selects: its bounding box with a little room around the ink.
     /// Thin highlight strokes are thickened so they cover the line of text they were drawn across.
     static func strokeBounds(_ points: [CGPoint], padding: CGFloat = 6, minimumSide: CGFloat = 40,

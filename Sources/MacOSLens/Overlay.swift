@@ -168,6 +168,8 @@ final class OverlayView: NSView {
     private var dragStartRect = CGRect.null
     private var startArea: Area = .none
     private var points: [CGPoint] = []
+    /// How the stroke being drawn reads; once it bends it stays freehand ink for the rest of the drag.
+    private var drawShape = SelectionEditor.DrawShape.undecided
     private var tapGeneration = 0
     private var warning: String?
     private var activity: String?
@@ -396,13 +398,13 @@ final class OverlayView: NSView {
     }
 
     var isDimmed: Bool { !dimLayer.isHidden }
-    /// The continuous gradient border currently drawn around the selection or the area being drawn, if any.
-    var outlineFrame: CGRect? { frameLayer.isFull ? frameLayer.rect : nil }
-    /// The corner brackets currently drawn, if any.
+    /// The corner brackets currently drawn around the selection or the box being dragged, if any.
     var framedRect: CGRect? { frameLayer.rect }
     var hasTextSelection: Bool { textRange != nil }
-    /// The glowing ink stroke currently drawn, if any.
-    var inkBounds: CGRect? { inkLayer.path.flatMap { $0.isEmpty ? nil : $0.boundingBoxOfPath } }
+    /// The glowing ink stroke currently drawn and visible, if any.
+    var inkBounds: CGRect? {
+        inkLayer.opacity > 0 ? inkLayer.path.flatMap { $0.isEmpty ? nil : $0.boundingBoxOfPath } : nil
+    }
     var toastText: String { toast.label.stringValue }
     var refinement: String { field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
 
@@ -445,7 +447,6 @@ final class OverlayView: NSView {
         // A text selection shows its own highlight instead of the frame.
         let visual = textRange == nil
         frameLayer.frame = bounds
-        frameLayer.spins = !reduceMotion
         if visual, let selection, !isWhole, drag != .draw {
             let path = CGMutablePath()
             path.addPath(full)
@@ -455,11 +456,15 @@ final class OverlayView: NSView {
         } else {
             dimLayer.isHidden = true
         }
-        // The frame follows a new area live while it is drawn, so the selection shows on any background.
-        if visual, drag == .draw, points.count > 1 {
-            frameLayer.show(SelectionEditor.strokeBounds(points, in: bounds), full: true)
-        } else if visual, drag != .draw, let frame = bracketFrame {
-            frameLayer.show(frame, full: !isWhole)
+        // A box being dragged is framed live; a circle or scribble shows only its ink until it is released.
+        if visual, drag == .draw {
+            if drawShape == .box, points.count > 1 {
+                frameLayer.show(SelectionEditor.strokeBounds(points, in: bounds))
+            } else {
+                frameLayer.hide()
+            }
+        } else if visual, let frame = bracketFrame {
+            frameLayer.show(frame)
         } else {
             frameLayer.hide()
         }
@@ -510,13 +515,16 @@ final class OverlayView: NSView {
         }
     }
 
-    /// Ink fades and the selection appears framed, like Android's circle morphing into the selected area.
-    private func morph(from rect: CGRect) {
+    /// Ink fades and the selection appears framed, like Android's circle morphing into the selected area. A dragged
+    /// box was framed all along, so its brackets stay put.
+    private func morph(from rect: CGRect, boxed: Bool = false) {
         updateStage()
-        fadeInk()
+        if boxed { inkLayer.path = nil } else { fadeInk() }
         guard !reduceMotion, bracketFrame != nil else { return }
         CATransaction.begin()
-        if frameLayer.rect != nil { frameLayer.animateBrackets(from: rect.insetBy(dx: -14, dy: -14), duration: 0.22) }
+        if !boxed, frameLayer.rect != nil {
+            frameLayer.animateBrackets(from: rect.insetBy(dx: -14, dy: -14), duration: 0.22)
+        }
         let appear = CABasicAnimation(keyPath: "opacity")
         appear.fromValue = 0
         appear.toValue = 1
@@ -943,6 +951,7 @@ final class OverlayView: NSView {
         if target == .move { NSCursor.closedHand.set() }
         if target == .draw {
             points = [clamp(point, to: bounds)]
+            drawShape = .undecided
             inkLayer.removeAllAnimations()
             inkLayer.opacity = 1
             inkLayer.path = Self.inkPath(points)
@@ -966,9 +975,11 @@ final class OverlayView: NSView {
             setRect(SelectionEditor.move(dragStartRect, by: delta, in: canvas))
         case .draw:
             points.append(clamp(raw, to: bounds))
+            if drawShape != .freehand { drawShape = SelectionEditor.drawShape(points) }
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             inkLayer.path = Self.inkPath(points)
+            inkLayer.opacity = drawShape == .box ? 0 : 1
             CATransaction.commit()
             updateStage()
         }
@@ -1003,10 +1014,11 @@ final class OverlayView: NSView {
         clearTextSelection()
         points = stroke
         drag = .draw
+        drawShape = SelectionEditor.drawShape(points)
         dragStart = stroke.first ?? .zero
         dragStartRect = isWhole ? bounds : selection ?? .null
         inkLayer.removeAllAnimations()
-        inkLayer.opacity = 1
+        inkLayer.opacity = drawShape == .box ? 0 : 1
         inkLayer.path = Self.inkPath(points)
         setDragging(true)
         updateStage()
@@ -1071,7 +1083,7 @@ final class OverlayView: NSView {
             return
         }
         area = .unit(SelectionEditor.unit(rect, in: canvas))
-        morph(from: rect)
+        morph(from: rect, boxed: drawShape == .box)
         normalizeWhole()
         updateStage()
         keepSelectionVisible()
@@ -1122,7 +1134,7 @@ final class OverlayView: NSView {
 
     /// The ink fades out where it was drawn.
     private func fadeInk() {
-        guard !reduceMotion else {
+        guard !reduceMotion, inkLayer.opacity > 0 else {
             inkLayer.path = nil
             return
         }

@@ -13,183 +13,80 @@ private let quietActions: [String: CAAction] = [
     "opacity": NSNull(), "hidden": NSNull(), "transform": NSNull(), "fillColor": NSNull()
 ]
 
-private func srgb(_ hex: Int) -> CGColor {
-    CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
-            blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-}
-
-/// The selection framed the way Lens frames its preview: a rounded rectangle with a thin Google four-colour conic
-/// gradient stroke and a soft outer glow in the same colours, gradient corner brackets and edge grips for resizing,
-/// all over a thin dark halo so the frame stays visible on white pages.
+/// The selection framed the way Android's Circle to Search frames it: only four white, rounded corner brackets with a
+/// soft dark shadow so they stay visible on white pages. There is no colour, no connecting border and no edge grip.
 final class LensFrameLayer: CALayer {
-    static let googleHexes = [0x4285F4, 0xEA4335, 0xFBBC05, 0x34A853]
     static let cornerRadius: CGFloat = 14
-    static let lineWidth: CGFloat = 3
-    static let markWidth: CGFloat = 6
-    static let haloWidth: CGFloat = 3
-    /// Seconds per turn of the gradient.
-    static let turn: CFTimeInterval = 6
-    private static let rings: [(width: CGFloat, alpha: CGFloat)] = [(20, 0.10), (12, 0.16), (6, 0.30)]
-    private static let margin: CGFloat = 30
+    static let lineWidth: CGFloat = 5
+    static let arm: CGFloat = 28
+    static let shadowOpacity: Float = 0.35
+    static let shadowRadius: CGFloat = 3.5
 
-    private let haloBorder = CAShapeLayer()
-    private let haloBrackets = CAShapeLayer()
-    private let haloGrips = CAShapeLayer()
-    private let glow = CAGradientLayer()
-    private let glowMask = CALayer()
-    private let glowRings = rings.map { _ in CAShapeLayer() }
-    private let gradient = CAGradientLayer()
-    private let lineMask = CALayer()
-    private let border = CAShapeLayer()
     private let brackets = CAShapeLayer()
-    private let grips = CAShapeLayer()
-    private var origin = CGPoint.zero
 
     /// The framed rectangle, nil while hidden.
     private(set) var rect: CGRect?
-    /// True when the continuous border, its glow and the edge grips are drawn, as for a partial selection.
-    private(set) var isFull = false
-    /// The gradient turns slowly unless Reduce Motion is on.
-    var spins = true {
-        didSet { updateSpin() }
-    }
-    var isSpinning: Bool { gradient.animation(forKey: "spin") != nil }
 
     override init() {
         super.init()
-        let colors = (Self.googleHexes + [Self.googleHexes[0]]).map(srgb)
-        glow.mask = glowMask
-        for ring in glowRings {
-            ring.fillColor = nil
-            glowMask.addSublayer(ring)
-        }
-        for layer in [haloBorder, haloBrackets, haloGrips, border, brackets, grips] {
-            layer.fillColor = nil
-            layer.lineCap = .round
-            layer.lineJoin = .round
-        }
-        for (layer, width) in [(haloBorder, Self.lineWidth), (haloBrackets, Self.markWidth),
-                               (haloGrips, Self.markWidth)] {
-            layer.strokeColor = NSColor.black.withAlphaComponent(0.45).cgColor
-            layer.lineWidth = width + 2 * Self.haloWidth
-        }
-        for (layer, width) in [(border, Self.lineWidth), (brackets, Self.markWidth), (grips, Self.markWidth)] {
-            layer.strokeColor = NSColor.black.cgColor
-            layer.lineWidth = width
-            lineMask.addSublayer(layer)
-        }
-        gradient.mask = lineMask
-        for layer in [glow, gradient] {
-            layer.type = .conic
-            layer.colors = colors
-            layer.startPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.endPoint = CGPoint(x: 0.5, y: 0)
-        }
-        for layer in [glow, haloBorder, haloBrackets, haloGrips, gradient] { addSublayer(layer) }
-        for layer in [self, glow, glowMask, gradient, lineMask, haloBorder, haloBrackets, haloGrips, border, brackets,
-                      grips] + glowRings {
-            layer.actions = quietActions
-        }
+        brackets.fillColor = nil
+        brackets.strokeColor = NSColor.white.cgColor
+        brackets.lineWidth = Self.lineWidth
+        brackets.lineCap = .round
+        brackets.lineJoin = .round
+        brackets.shadowColor = NSColor.black.cgColor
+        brackets.shadowOpacity = Self.shadowOpacity
+        brackets.shadowRadius = Self.shadowRadius
+        brackets.shadowOffset = .zero
+        addSublayer(brackets)
+        for layer in [self, brackets] { layer.actions = quietActions }
         isHidden = true
     }
 
     override init(layer: Any) { super.init(layer: layer) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Frames `rect`; `full` adds the continuous border, its glow and the edge grips.
-    func show(_ rect: CGRect, full: Bool) {
-        let frame = rect.insetBy(dx: -Self.margin, dy: -Self.margin)
+    func show(_ rect: CGRect) {
         self.rect = rect
-        isFull = full
-        origin = frame.origin
-        for layer in [glow, gradient] { layer.frame = frame }
-        for mask in [glowMask, lineMask] { mask.frame = CGRect(origin: .zero, size: frame.size) }
-        for layer in glowRings + [border, brackets, grips] { layer.frame = glowMask.bounds }
-        for layer in [haloBorder, haloBrackets, haloGrips] { layer.frame = bounds }
-        let outline = full ? Self.roundedPath(rect) : nil
-        let bracketPath = Self.bracketPath(rect)
-        let gripPath = full ? Self.gripPath(rect) : nil
-        haloBorder.path = outline
-        haloBrackets.path = bracketPath
-        haloGrips.path = gripPath
-        border.path = local(outline)
-        brackets.path = local(bracketPath)
-        grips.path = local(gripPath)
-        for (ring, spec) in zip(glowRings, Self.rings) {
-            ring.lineWidth = spec.width
-            ring.strokeColor = NSColor.white.withAlphaComponent(spec.alpha).cgColor
-            ring.path = full ? local(Self.roundedPath(rect.insetBy(dx: -spec.width / 2, dy: -spec.width / 2),
-                                                      radius: Self.radius(for: rect) + spec.width / 2)) : nil
-        }
-        glow.isHidden = !full
+        brackets.frame = bounds
+        brackets.path = Self.bracketPath(rect)
         isHidden = false
-        updateSpin()
     }
 
     func hide() {
         isHidden = true
         rect = nil
-        isFull = false
-        updateSpin()
     }
 
     /// The brackets grow from `from` to the current frame, as the circle morphs into the selection.
     func animateBrackets(from: CGRect, duration: CFTimeInterval) {
         guard let rect else { return }
-        for (layer, transform) in [(haloBrackets, false), (brackets, true)] {
-            let grow = CABasicAnimation(keyPath: "path")
-            grow.fromValue = transform ? local(Self.bracketPath(from)) : Self.bracketPath(from)
-            grow.toValue = transform ? local(Self.bracketPath(rect)) : Self.bracketPath(rect)
-            grow.duration = duration
-            grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            layer.add(grow, forKey: "grow")
-        }
-    }
-
-    private func local(_ path: CGPath?) -> CGPath? {
-        guard let path else { return nil }
-        var transform = CGAffineTransform(translationX: -origin.x, y: -origin.y)
-        return path.copy(using: &transform)
-    }
-
-    private func updateSpin() {
-        let wanted = spins && !isHidden
-        guard wanted != isSpinning else { return }
-        guard wanted else {
-            gradient.removeAnimation(forKey: "spin")
-            glow.removeAnimation(forKey: "spin")
-            return
-        }
-        let steps = 48
-        let spin = CAKeyframeAnimation(keyPath: "endPoint")
-        spin.values = (0...steps).map { step -> NSValue in
-            let angle = CGFloat(step) / CGFloat(steps) * 2 * .pi
-            return NSValue(point: NSPoint(x: 0.5 + 0.5 * sin(angle), y: 0.5 - 0.5 * cos(angle)))
-        }
-        spin.duration = Self.turn
-        spin.repeatCount = .infinity
-        spin.calculationMode = .linear
-        gradient.add(spin, forKey: "spin")
-        glow.add(spin, forKey: "spin")
+        let grow = CABasicAnimation(keyPath: "path")
+        grow.fromValue = Self.bracketPath(from)
+        grow.toValue = Self.bracketPath(rect)
+        grow.duration = duration
+        grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        brackets.add(grow, forKey: "grow")
     }
 
     // MARK: Paths
 
-    static func radius(for rect: CGRect) -> CGFloat {
-        max(0, min(cornerRadius, min(rect.width, rect.height) * 0.3))
-    }
-
+    /// Each arm is about 28 pt, shortened on small selections so the two arms along an edge never meet.
     static func armLength(for rect: CGRect) -> CGFloat {
         let side = min(rect.width, rect.height)
-        return min(side / 2, max(radius(for: rect) + 8, min(46, side * 0.32)))
+        return max(0, min(arm, side / 2 - max(4, side * 0.12)))
     }
 
-    static func roundedPath(_ rect: CGRect, radius: CGFloat? = nil) -> CGPath {
-        let radius = min(radius ?? self.radius(for: rect), rect.width / 2, rect.height / 2)
+    static func radius(for rect: CGRect) -> CGFloat {
+        max(0, min(cornerRadius, min(rect.width, rect.height) * 0.3, armLength(for: rect)))
+    }
+
+    static func roundedPath(_ rect: CGRect) -> CGPath {
+        let radius = min(self.radius(for: rect), rect.width / 2, rect.height / 2)
         return CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
     }
 
-    /// Four corner brackets following the border's rounded corners, with a fixed element count so the path animates.
+    /// Four rounded L brackets on the selection's corners, with a fixed element count so the path animates.
     static func bracketPath(_ rect: CGRect) -> CGPath {
         let arm = armLength(for: rect), radius = max(0.5, self.radius(for: rect))
         let path = CGMutablePath()
@@ -198,21 +95,6 @@ final class LensFrameLayer: CALayer {
             path.move(to: CGPoint(x: x, y: y + dy * arm))
             path.addArc(tangent1End: CGPoint(x: x, y: y), tangent2End: CGPoint(x: x + dx * arm, y: y), radius: radius)
             path.addLine(to: CGPoint(x: x + dx * arm, y: y))
-        }
-        return path
-    }
-
-    /// Short grips at the middle of each edge, where the edge handles are.
-    static func gripPath(_ rect: CGRect) -> CGPath {
-        let path = CGMutablePath()
-        let across = min(30, rect.width * 0.18), up = min(30, rect.height * 0.18)
-        for y in [rect.minY, rect.maxY] {
-            path.move(to: CGPoint(x: rect.midX - across / 2, y: y))
-            path.addLine(to: CGPoint(x: rect.midX + across / 2, y: y))
-        }
-        for x in [rect.minX, rect.maxX] {
-            path.move(to: CGPoint(x: x, y: rect.midY - up / 2))
-            path.addLine(to: CGPoint(x: x, y: rect.midY + up / 2))
         }
         return path
     }
