@@ -29,10 +29,9 @@ other machines requires your own Developer ID signing and notarization.
 The dependency-free test executable works with Command Line Tools installations
 that do not include XCTest.
 
-The build script resets this app's own Screen Recording entry, because each ad-hoc
-signature counts as a new app. After launching, turn macOS Lens on in
-System Settings › Privacy & Security › Screen & System Audio Recording, or use
-**Fix Screen Recording permission** in the app. Set `MACOS_LENS_SKIP_TCC_RESET=1` to skip the reset.
+Each ad-hoc signature counts as a new app for Screen Recording. The scripts never touch
+privacy settings: after launching a new build, click **Allow Screen Recording…** in its window
+(or **Fix Screen Recording permission…**), which clears the app's own stale entry and asks macOS once.
 
 ## Releasing
 

@@ -2,7 +2,7 @@
 # Installs or updates macOS Lens.
 #
 #   curl -fsSL https://raw.githubusercontent.com/SharonHart/macos-lens/main/scripts/install.sh | bash
-#   ./scripts/install.sh [--dir <path>] [--no-launch] [--no-tcc-reset]
+#   ./scripts/install.sh [--dir <path>] [--no-launch]
 #
 # This downloads the latest prebuilt release, verifies its checksum and signature, and installs it to
 # /Applications (or ~/Applications when /Applications isn't writable). Nothing is sent anywhere except the
@@ -14,7 +14,8 @@
 #   MACOS_LENS_RELEASE_ZIP=<zip>    install this release zip instead of downloading (checked against a
 #                                   SHA256SUMS file next to it when present)
 #   MACOS_LENS_SKIP_LAUNCH=1        same as --no-launch
-#   MACOS_LENS_SKIP_TCC_RESET=1     same as --no-tcc-reset
+#
+# Privacy permissions are left alone: the app asks for Screen Recording only when its button is clicked.
 set -euo pipefail
 
 REPO="SharonHart/macos-lens"
@@ -34,7 +35,6 @@ SOURCE_ROOT=""
 NEW_APP=""
 DEST_APP=""
 DOWNLOADED_ZIP=""
-CHANGED=0
 
 info() { printf '==> %s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -57,7 +57,6 @@ Usage:
 Options:
   --dir <path>     install into <path> instead of /Applications (or ~/Applications)
   --no-launch      don't open the app after installing
-  --no-tcc-reset   don't reset the app's Screen Recording entry
   -h, --help       show this help
 EOF
 }
@@ -201,7 +200,7 @@ build_from_source() {
     info "Building from $SOURCE_ROOT (this takes a minute or two)..."
     NEW_APP="$WORK/build/$APP_NAME"
     mkdir -p "$WORK/build"
-    MACOS_LENS_APP="$NEW_APP" MACOS_LENS_SKIP_TCC_RESET=1 bash "$SOURCE_ROOT/scripts/build-app.sh" ||
+    MACOS_LENS_APP="$NEW_APP" bash "$SOURCE_ROOT/scripts/build-app.sh" ||
         die "The build failed."
     # Checkouts whose build script predates MACOS_LENS_APP build into dist/.
     if [[ ! -d "$NEW_APP" ]]; then NEW_APP="$SOURCE_ROOT/dist/$APP_NAME"; fi
@@ -252,7 +251,7 @@ quit_app() {
     for pid in $(app_pids "$app"); do kill -KILL "$pid" 2>/dev/null || true; done
 }
 
-# Installs NEW_APP at DEST_APP. Sets CHANGED=1 when the installed copy was replaced.
+# Installs NEW_APP at DEST_APP, unless the same build is already there.
 install_app() {
     local identifier version
     identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$NEW_APP/Contents/Info.plist" 2>/dev/null || true)"
@@ -261,10 +260,8 @@ install_app() {
     version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$NEW_APP/Contents/Info.plist")"
 
     choose_destination
-    CHANGED=1
     if [[ -d "$DEST_APP" ]] && codesign --verify --deep --strict "$DEST_APP" >/dev/null 2>&1 &&
         [[ "$(cdhash "$DEST_APP")" == "$(cdhash "$NEW_APP")" ]]; then
-        CHANGED=0
         info "macOS Lens $version is already installed at $DEST_APP."
         return 0
     fi
@@ -305,14 +302,13 @@ print_shortcuts() {
 }
 
 main() {
-    local from_source=0 launch=1 tcc_reset=1 zip=""
+    local from_source=0 launch=1 zip=""
     [[ "${MACOS_LENS_SKIP_LAUNCH:-0}" == 1 ]] && launch=0
-    [[ "${MACOS_LENS_SKIP_TCC_RESET:-0}" == 1 ]] && tcc_reset=0
     while (($#)); do
         case "$1" in
             --from-source) from_source=1 ;;
             --no-launch) launch=0 ;;
-            --no-tcc-reset) tcc_reset=0 ;;
+            --no-tcc-reset) ;; # Accepted for older instructions; nothing is reset any more.
             --dir)
                 [[ $# -ge 2 ]] || die "--dir needs a path."
                 MACOS_LENS_INSTALL_DIR="$2"
@@ -353,18 +349,13 @@ main() {
     fi
 
     install_app
-    if ((CHANGED && tcc_reset)); then
-        # Each ad-hoc signed build counts as a new app for Screen Recording; clear only this app's stale entry.
-        info "Resetting macOS Lens's Screen Recording entry so the new build can be allowed."
-        /usr/bin/tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
-    fi
 
     printf '\nmacOS Lens is installed at %s\n' "$DEST_APP"
     print_shortcuts
     if ((launch)); then
         open "$DEST_APP"
-        printf '\nmacOS Lens is opening. The first time, it adds itself to System Settings › Privacy & Security ›\n'
-        printf 'Screen & System Audio Recording: turn it on there, then choose Quit & Reopen.\n'
+        printf '\nmacOS Lens is opening. When it shows its Screen Recording window, click Allow Screen Recording…,\n'
+        printf 'turn macOS Lens on in System Settings, then choose Quit & Reopen.\n'
     else
         printf '\nOpen it with: open "%s"\n' "$DEST_APP"
     fi

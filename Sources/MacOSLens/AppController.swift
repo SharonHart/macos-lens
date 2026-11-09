@@ -2,7 +2,6 @@ import AppKit
 import Carbon
 import LensCore
 import ScreenCaptureKit
-import Security
 
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
@@ -33,11 +32,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var hotKeys: [EventHotKeyRef] = []
     private var eventHandler: EventHandlerRef?
     private var browserField: NSTextField?
-    /// Waiting for the user to turn on Screen Recording in System Settings.
-    private var awaitingScreenRecording = false
-    private var permissionTimer: Timer?
+    private var onboarding: ScreenRecordingOnboarding?
+    /// Screen Recording calls; checks count them instead of touching the Mac's privacy settings.
+    var screenAccess = ScreenAccess.system
+    /// The last window brought forward; checks read it because they never put windows on screen.
+    private(set) var presentedWindow: NSWindow?
     private let defaults: UserDefaults
-    /// Checks build overlays without putting them on screen.
+    /// Checks build overlays and windows without putting them on screen.
     private let presentsOverlays: Bool
     /// Sends the selected crop to Google Lens in the results sheet; checks count calls instead.
     var upload: (ResultsPanel, CGImage) async throws -> URL = { panel, crop in
@@ -89,10 +90,15 @@ final class AppController: NSObject, NSApplicationDelegate {
                                                           name: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil)
         registerShortcuts()
-        // The menu-bar item can be hidden by the notch or menu-bar settings, so every launch shows a window.
+        showFirstWindows()
+    }
+
+    /// The menu-bar item can be hidden by the notch or menu-bar settings, so every launch shows a window. Without
+    /// Screen Recording that is the onboarding window, which asks macOS only when its button is clicked.
+    func showFirstWindows() {
+        guard screenAccess.granted() else { return showScreenRecordingOnboarding() }
         showLauncher()
         if !defaults.bool(forKey: "onboarded") { showSettings() }
-        if !CGPreflightScreenCaptureAccess() { requestScreenRecording(forceReset: false) }
     }
 
     /// Opening the app again from Finder or Spotlight shows the launcher, but never as a side effect of the shortcut.
@@ -103,7 +109,7 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     /// Coming back from System Settings after turning Screen Recording on.
     func applicationDidBecomeActive(_ notification: Notification) {
-        if awaitingScreenRecording && CGPreflightScreenCaptureAccess() { screenRecordingGranted() }
+        onboarding?.refresh()
     }
 
     @objc private func applicationActivated(_ notification: Notification) {
@@ -206,11 +212,9 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     func activate(selectingAllText: Bool = false) {
         guard !busy, overlays.isEmpty else { return }
-        // The shortcut always opens the selection overlay; only missing Screen Recording access stops it.
-        guard CGPreflightScreenCaptureAccess() else {
-            requestScreenRecording(forceReset: false)
-            return
-        }
+        // The shortcut always opens the selection overlay; only missing Screen Recording access stops it, and then
+        // the onboarding window explains it without asking macOS.
+        guard screenAccess.granted() else { return showScreenRecordingOnboarding() }
         let front = NSWorkspace.shared.frontmostApplication
         previousApp = front == NSRunningApplication.current ? lastExternalApp : front
         lastActivation = Date()
@@ -729,128 +733,28 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     // MARK: Screen Recording
 
-    /// Identifies this exact build, so a stale permission entry is reset once per rebuild and never again.
-    private static func buildIdentifier() -> String {
-        var code: SecCode?
-        var staticCode: SecStaticCode?
-        var info: CFDictionary?
-        if SecCodeCopySelf([], &code) == errSecSuccess, let code,
-           SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
-           SecCodeCopySigningInformation(staticCode, SecCSFlags(), &info) == errSecSuccess,
-           let unique = (info as? [String: Any])?[kSecCodeInfoUnique as String] as? Data {
-            return unique.map { String(format: "%02x", $0) }.joined()
-        }
-        let path = Bundle.main.executablePath ?? ""
-        let date = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
-        return "\(path)@\(date?.timeIntervalSince1970 ?? 0)"
+    /// Builds the onboarding window once. The native checks drive it offscreen.
+    func makeScreenRecordingOnboarding() -> ScreenRecordingOnboarding {
+        if let onboarding { return onboarding }
+        let made = ScreenRecordingOnboarding(access: screenAccess, shortcutTitle: { [weak self] in self?.shortcut.title },
+                                             relaunch: { [weak self] in self?.relaunch() })
+        onboarding = made
+        return made
     }
 
-    /// Removes only this app's own Screen Recording entry, which an earlier ad-hoc build leaves behind.
-    private static func resetOwnScreenRecordingEntry() {
-        guard Bundle.main.bundleIdentifier == bundleID else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-        process.arguments = ["reset", "ScreenCapture", bundleID]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            NSLog("macOS Lens: tccutil reset failed: \(error.localizedDescription)")
-        }
+    /// Shows the onboarding window. It never asks macOS by itself.
+    func showScreenRecordingOnboarding() {
+        let onboarding = makeScreenRecordingOnboarding()
+        onboarding.prepare()
+        present(onboarding.window)
     }
 
-    /// Adds this copy of the app to System Settings → Screen Recording so the user only flips its switch.
-    private func requestScreenRecording(forceReset: Bool) {
-        guard !awaitingScreenRecording || forceReset else {
-            showScreenRecordingHelp()
-            return
-        }
-        let build = Self.buildIdentifier()
-        if forceReset || defaults.string(forKey: "permissionResetBuild") != build {
-            defaults.set(build, forKey: "permissionResetBuild")
-            Self.resetOwnScreenRecordingEntry()
-        }
-        awaitingScreenRecording = true
-        CGRequestScreenCaptureAccess()
-        busy = true
-        Task {
-            // A ScreenCaptureKit request also lists the app when the CoreGraphics request alone does not.
-            _ = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            busy = false
-            openScreenRecordingSettings()
-            showScreenRecordingHelp()
-        }
-    }
-
-    @objc private func fixScreenRecording() {
-        if CGPreflightScreenCaptureAccess() {
-            NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.messageText = "Screen Recording is on"
-            alert.informativeText = "macOS Lens can capture your screen. If capturing still fails, quit and reopen it."
-            alert.addButton(withTitle: "OK")
-            alert.addButton(withTitle: "Quit & Reopen")
-            if alert.runModal() == .alertSecondButtonReturn { relaunch() }
-            return
-        }
-        requestScreenRecording(forceReset: true)
-    }
-
-    private func openScreenRecordingSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"),
-              NSWorkspace.shared.open(url) else {
-            NSLog("macOS Lens: System Settings could not be opened")
-            return
-        }
-    }
-
-    private static let grantedResponse = NSApplication.ModalResponse(rawValue: 9_001)
-
-    /// Waits for the switch to be turned on while the alert is up, then offers to reopen the app.
-    private func showScreenRecordingHelp() {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Turn on macOS Lens, then reopen"
-        alert.informativeText = "macOS Lens is now listed in System Settings → Privacy & Security → " +
-                                "Screen & System Audio Recording. Turn its switch on; this message notices and " +
-                                "offers to reopen the app. Nothing was captured or uploaded."
-        alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Quit & Reopen")
-        alert.addButton(withTitle: "Later")
-        let granted = Self.grantedResponse
-        let timer = Timer(timeInterval: 0.5, repeats: true) { _ in
-            if CGPreflightScreenCaptureAccess() { NSApp.stopModal(withCode: granted) }
-        }
-        RunLoop.main.add(timer, forMode: .modalPanel)
-        permissionTimer = timer
-        let response = alert.runModal()
-        timer.invalidate()
-        permissionTimer = nil
-        switch response {
-        case Self.grantedResponse:
-            alert.window.orderOut(nil)
-            screenRecordingGranted()
-        case .alertFirstButtonReturn:
-            openScreenRecordingSettings()
-        case .alertSecondButtonReturn:
-            relaunch()
-        default:
-            break
-        }
-    }
-
-    private func screenRecordingGranted() {
-        awaitingScreenRecording = false
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Screen Recording is on"
-        alert.informativeText = "Reopen macOS Lens so macOS lets it capture the screen."
-        alert.addButton(withTitle: "Quit & Reopen")
-        alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn { relaunch() }
+    /// The user asked to fix it, so this resets the app's entry and asks macOS right away, unless it's already on.
+    @objc func fixScreenRecording() {
+        let onboarding = makeScreenRecordingOnboarding()
+        onboarding.prepare()
+        if onboarding.step != .granted { onboarding.allow() }
+        present(onboarding.window)
     }
 
     /// Starts a fresh copy once this one has exited.
@@ -921,6 +825,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     // An accessory app opened in the background is not activated on macOS 14+, so its windows would stay behind others.
     private func present(_ window: NSWindow?) {
         guard let window else { return }
+        presentedWindow = window
+        guard presentsOverlays else { return }
         window.collectionBehavior.insert([.moveToActiveSpace, .fullScreenAuxiliary])
         NSApp.activate(ignoringOtherApps: true)
         window.orderFrontRegardless()
@@ -1003,7 +909,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         form.add(popup("Search shortcut", Shortcut.all, selected: shortcut, action: #selector(changeShortcut(_:))),
                  popup("Text shortcut", Shortcut.textOptions, selected: textShortcut,
                        action: #selector(changeTextShortcut(_:))), gap: 18)
-        form.add(.item(label("Screen Recording: each new build of this unsigned app needs the switch turned on again.")),
+        form.add(.item(label("Screen Recording: each new version of this unsigned app needs it allowed again.")),
                  gap: 22)
         form.add(.item(NSButton(title: "Fix Screen Recording permission…", target: self,
                                 action: #selector(fixScreenRecording))),

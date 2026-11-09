@@ -50,7 +50,7 @@ fi
 ARCHS="$(lipo -archs "$STAGE/MacOSLens")"
 
 step "Assembling and ad-hoc signing the app ($ARCHS)"
-MACOS_LENS_BINARY="$STAGE/MacOSLens" MACOS_LENS_APP="$APP" MACOS_LENS_SKIP_TCC_RESET=1 bash scripts/build-app.sh
+MACOS_LENS_BINARY="$STAGE/MacOSLens" MACOS_LENS_APP="$APP" bash scripts/build-app.sh
 codesign --verify --deep --strict "$APP"
 
 step "Creating $NAME.zip"

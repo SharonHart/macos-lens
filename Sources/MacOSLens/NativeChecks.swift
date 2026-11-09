@@ -449,6 +449,7 @@ enum NativeChecks {
             try markChecks(check: check, folder: snapshot?.deletingLastPathComponent())
             try panelLoadChecks(check: check, spin: spin)
             try openChecks(check: check, spin: spin, gesture: gesture, suite: suite)
+            try permissionChecks(check: check, spin: spin, suite: suite, folder: snapshot?.deletingLastPathComponent())
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -498,6 +499,64 @@ enum NativeChecks {
               "a box around a picture selects it, and the upload waits for the pause after the gesture")
         check(spin({ uploads == 1 }, debounce + 1) && next.panelShown,
               "the first upload happens only after the gesture, and only once")
+    }
+
+    // MARK: - Screen Recording
+
+    /// Launching or pressing the shortcut without Screen Recording shows the onboarding window and never asks macOS;
+    /// only its button resets the app's entry and asks, once. Fake calls stand in for the real permission calls.
+    private static func permissionChecks(check: (Bool, String) -> Void, spin: (() -> Bool, TimeInterval) -> Bool,
+                                         suite: UserDefaults, folder: URL?) throws {
+        var granted = false
+        var calls: [String] = []
+        let controller = AppController(defaults: suite, presentsOverlays: false)
+        controller.screenAccess = ScreenAccess(granted: { granted }, request: { calls.append("request") },
+                                               reset: { calls.append("reset") },
+                                               openSettings: { calls.append("settings") })
+        let onboarding = controller.makeScreenRecordingOnboarding()
+        defer { onboarding.later(); onboarding.window.close() }
+        func titles() -> [String] { onboarding.buttons.map(\.title) }
+        func snapshot(_ name: String) throws {
+            if folder != nil { _ = try preview(onboarding.window, folder, "onboarding.\(name).png") }
+        }
+
+        controller.showFirstWindows()
+        check(controller.presentedWindow === onboarding.window && onboarding.step == .ask && calls.isEmpty &&
+              titles() == ["Later", ScreenRecordingOnboarding.allowTitle] &&
+              onboarding.buttons.last?.keyEquivalent == "\r",
+              "launching without Screen Recording shows only the onboarding window, with “Allow Screen " +
+              "Recording…” as its one primary button, and asks macOS nothing")
+        try snapshot("ask")
+        controller.activate()
+        _ = spin({ false }, 1.2)
+        check(calls.isEmpty && !controller.isShowingOverlay && controller.presentedWindow === onboarding.window,
+              "the shortcut without access shows the same window again and still asks macOS nothing")
+
+        onboarding.buttons.last?.performClick(nil)
+        check(calls == ["reset", "request"] && onboarding.step == .waiting &&
+              Set(titles()) == [ScreenRecordingOnboarding.settingsTitle, ScreenRecordingOnboarding.reopenTitle],
+              "clicking the button resets the app's own entry, then asks macOS exactly once, and offers System " +
+              "Settings in case no prompt appeared")
+        try snapshot("waiting")
+        onboarding.buttons.first { $0.title == ScreenRecordingOnboarding.settingsTitle }?.performClick(nil)
+        check(calls == ["reset", "request", "settings"], "System Settings opens only from its button")
+
+        granted = true
+        check(spin({ onboarding.step == .granted }, 2) && titles().last == ScreenRecordingOnboarding.reopenTitle &&
+              calls.filter { $0 == "request" }.count == 1,
+              "polling notices the switch and offers Quit & Reopen, without asking again")
+        try snapshot("granted")
+
+        granted = false
+        calls = []
+        controller.fixScreenRecording()
+        check(calls == ["reset", "request"] && onboarding.step == .waiting,
+              "Fix Screen Recording permission… runs the same reset and single request")
+        granted = true
+        calls = []
+        controller.fixScreenRecording()
+        check(calls.isEmpty && onboarding.step == .granted,
+              "Fix Screen Recording permission… leaves a working permission alone and offers Quit & Reopen")
     }
 
     // MARK: - Results sheet loading

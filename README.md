@@ -33,10 +33,11 @@ Homebrew quarantines its downloads, so use **Open Anyway** once as described abo
 
 ## First launch and Screen Recording
 
-macOS Lens adds itself to System Settings › Privacy & Security › Screen & System Audio Recording.
-Turn it on there, then choose **Quit & Reopen**. If the switch doesn't take effect, choose
-**Fix Screen Recording permission…** in the menu bar or the launcher; it clears the stale entry and
-opens the right settings page.
+The first launch shows one window. Click **Allow Screen Recording…**: macOS asks once, then turn
+macOS Lens on in System Settings › Privacy & Security › Screen & System Audio Recording and choose
+**Quit & Reopen**. Nothing asks for permission until you click that button. If capturing still fails,
+choose **Fix Screen Recording permission…** in the menu bar, the launcher or Settings; it clears the
+app's stale entry and asks again.
 
 Press Command + Shift + 2 to open the lens. Nothing is selected or sent until you circle, box or tap
 something to search it; highlight, tap or circle text to select it. Command + Shift + 1 opens it with all the screen's text selected
@@ -54,8 +55,8 @@ question. For Homebrew installs, run `brew uninstall --cask --zap macos-lens`.
 
 ## Signing
 
-Releases are ad-hoc signed, and each build counts as a new app for Screen Recording, so the installer
-resets the old entry and you turn it on again after updating. Signing with a Developer ID certificate
+Releases are ad-hoc signed, and each build counts as a new app for Screen Recording, so after updating
+the app shows its Screen Recording window again and you allow it once more. Signing with a Developer ID certificate
 and notarizing would remove the Gatekeeper warning and keep the Screen Recording permission across
 updates.
 

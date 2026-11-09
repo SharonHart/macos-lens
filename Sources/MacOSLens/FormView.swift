@@ -37,7 +37,9 @@ final class FormView: NSView {
     override var isFlipped: Bool { true }
 
     /// Adds a row `gap` points below the previous one.
-    func add(_ items: Item..., gap: CGFloat = 12) {
+    func add(_ items: Item..., gap: CGFloat = 12) { add(items, gap: gap) }
+
+    func add(_ items: [Item], gap: CGFloat = 12) {
         for item in items { addSubview(item.view) }
         rows.append(Row(items: items, gap: gap))
     }
