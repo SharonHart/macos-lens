@@ -60,7 +60,7 @@ const MATCHES = [
   { t: 'Replacement cover for butterfly chairs, {c}', c: 'navy', site: 'fabricshed.example', price: '$48' },
 ];
 const WEB = [
-  { site: 'hollis-furniture.example › chairs', t: 'Butterfly chair, leather and steel', p: 'A folding steel frame with a cognac leather sling. Ships flat in one box.' },
+  { site: 'hollisfurniture.shop › chairs', t: 'Butterfly chair, leather and steel', p: 'A folding steel frame with a cognac leather sling. Ships flat in one box.' },
   { site: 'designnotes.example', t: 'How the butterfly chair got its shape', p: 'One bent steel frame, four corners, and a sling that hangs between them.' },
   { site: 'smallspaces.example', t: 'Nine folding chairs for a small balcony', p: 'We folded, carried and sat in each one for a week.' },
 ];
@@ -479,7 +479,7 @@ class Lens {
     const room = this.hero && this.root.classList.contains('has-sheet') && this.sheet.getBoundingClientRect().left > s.left + s.width / 2
       ? this.sheet.getBoundingClientRect().left - s.left - 8 : s.width - 8;
     if (this.state === 'text' && this.sel) {
-      const rs = this.selWords().map(w => w.getBoundingClientRect()).filter(r => r.width);
+      const rs = this.selWords().flatMap(w => [...w.getClientRects()]).filter(r => r.width);
       if (!rs.length) return;
       const top = Math.min(...rs.map(r => r.top)) - s.top, bottom = Math.max(...rs.map(r => r.bottom)) - s.top;
       const left = Math.min(...rs.map(r => r.left)) - s.left, right = Math.max(...rs.map(r => r.right)) - s.left;
@@ -728,7 +728,7 @@ class Lens {
       const t0 = performance.now(), dur = 1100;
       const pts = [];
       const frame = now => {
-        const k = Math.min((now - t0) / dur, 1);
+        const k = Math.max(0, Math.min((now - t0) / dur, 1));
         const e = 1 - Math.pow(1 - k, 3);
         const n = Math.round(e * 64);
         while (pts.length <= n) {

@@ -274,6 +274,7 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 .slide__h { font-size: 2em; font-weight: 700; letter-spacing: -.02em; }
 .slide p { font-size: 1.2em; line-height: 1.5; }
 .slide .big { margin-top: 1.1em; font-family: var(--font-mono); font-size: 1.45em; padding: .5em .8em; border-radius: .4em; background: #e9ece4; align-self: start; }
+.slide .big [data-pick] { white-space: nowrap; }
 .tiles { display: grid; gap: .6em; }
 .tile { border-radius: .5em; background: #2c313b; display: grid; place-items: end start; padding: .5em; font-size: .78em; color: #cdd3dd; }
 .tile:nth-child(1) { background: linear-gradient(160deg, #3b4b63, #252b36); }

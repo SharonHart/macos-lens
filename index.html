@@ -17,15 +17,18 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
 <meta property="og:type" content="website">
 <meta property="og:title" content="macOS Lens: Circle to Search for the Mac">
 <meta property="og:description" content="Freeze the screen, circle anything, search it or use its text. Free, macOS 14 or later.">
+<meta property="og:url" content="https://sharonhart.github.io/macos-lens/">
 <meta property="og:image" content="https://sharonhart.github.io/macos-lens/og.png">
+<meta property="og:image:alt" content="The macOS Lens app icon and name, with the line: Circle anything on your screen to search it, or select its text.">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://sharonhart.github.io/macos-lens/og.png">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon.ico" sizes="32x32">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="theme-color" content="#0b0d12">
-<!-- <link rel="canonical" href="https://[domain once chosen]/"> -->
+<link rel="canonical" href="https://sharonhart.github.io/macos-lens/">
 <meta name="site-kind" content="software">
 <meta name="page-type" content="software">
 <link rel="preload" href="assets/fonts/urbanist-var.woff2" as="font" type="font/woff2" crossorigin>
@@ -51,7 +54,7 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
     <a class="skip-link" href="#top">Skip to content</a>
     <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
     <nav class="nav__links" aria-label="Main">
-      <div class="nav__item"><a class="nav__link" href="#watch">Watch</a></div>
+      <div class="nav__item" data-reel-link hidden><a class="nav__link" href="#watch">Watch</a></div>
       <div class="nav__item">
         <a class="nav__link" href="#text">Features <svg class="chev" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
         <div class="nav__menu">
@@ -115,7 +118,7 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
             <div class="desk">
               <div class="desk__bar"><b>Browser</b><span>File</span><span>Edit</span><span>View</span><span>History</span><span class="r"><img src="assets/brand/mark.svg" alt="">Tue 9:41</span></div>
               <div class="win shop">
-                <div class="win__bar"><i></i><i></i><i></i><span class="win__url">hollis-furniture.example</span></div>
+                <div class="win__bar"><i></i><i></i><i></i><span class="win__url">hollisfurniture.shop</span></div>
                 <div class="win__body">
                   <div class="shop__photo" data-obj="Butterfly chair"><img src="assets/demo/chair.jpg" alt="" width="962" height="1000"></div>
                   <div class="shop__info" data-words>
@@ -160,22 +163,25 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
     </div></div>
   </section>
 
-  <section class="section" id="watch" aria-labelledby="watch-h">
+  <!-- the reel ships with real v0.2.1 footage: until then this section and the two "Watch" links (data-reel-link) stay hidden,
+       and the video has no poster="assets/reel/poster.jpg" (a hidden video still fetches its poster) -->
+  <section class="section" id="watch" aria-labelledby="watch-h" hidden>
     <div class="wrap">
       <div class="section-head"><h2 id="watch-h">Thirty seconds of the real app. <span class="muted">Recorded on macOS 26.</span></h2></div>
       <div class="grid watch">
       <div class="span-5 watch__side">
         <ol class="chapters" aria-label="Chapters" hidden>
           <li><button type="button" data-t="0"><span>0:00</span>Freeze the screen</button></li>
-          <li><button type="button" data-t="5"><span>0:05</span>Circle the chair</button></li>
-          <li><button type="button" data-t="12"><span>0:12</span>Select and translate text</button></li>
-          <li><button type="button" data-t="19"><span>0:19</span>Act on an order email</button></li>
-          <li><button type="button" data-t="25"><span>0:25</span>Open in the browser</button></li>
+          <li><button type="button" data-t="2.4"><span>0:02</span>Circle a chair to search it</button></li>
+          <li><button type="button" data-t="7.2"><span>0:07</span>Translate a menu</button></li>
+          <li><button type="button" data-t="12"><span>0:12</span>Track a parcel from an email</button></li>
+          <li><button type="button" data-t="16.8"><span>0:16</span>Copy and search an error</button></li>
+          <li><button type="button" data-t="21.6"><span>0:21</span>Circle a paused video</button></li>
         </ol>
         <p class="watch__note">Recorded in the real app with a scripted pointer, on pages written for the demo.</p>
       </div>
       <div class="span-7 start-6 reel">
-        <video data-reel muted playsinline loop preload="none" poster="assets/reel/poster.jpg" width="1920" height="1080" aria-label="macOS Lens in use: freezing the screen, circling a chair to see visual matches, selecting and translating text, and opening a result in the browser.">
+        <video data-reel muted playsinline loop preload="none" width="1920" height="1080" aria-label="macOS Lens in use: freezing the screen, circling a chair to see visual matches, translating a menu, tracking a parcel from an email, copying an error and circling a paused video.">
           <!-- the reel's sources go here once it is rendered (sha256-versioned):
           <source media="(max-width: 639px)" src="assets/reel/reel-4x5.mp4?v=" type="video/mp4">
           <source src="assets/reel/reel-16x9.mp4?v=" type="video/mp4"> -->
@@ -282,14 +288,14 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
                 <div class="win mail">
                   <div class="win__bar"><i></i><i></i><i></i><span class="win__url">Inbox · Your order has shipped</span></div>
                   <div class="win__body" data-words>
-                    <div class="from"><i aria-hidden="true">H</i><div><b>Hollis Furniture</b><span>orders@hollis.example</span></div></div>
+                    <div class="from"><i aria-hidden="true">H</i><div><b>Hollis Furniture</b><span>orders@hollisfurniture.shop</span></div></div>
                     <p class="mail__h">Your butterfly chair is on its way</p>
                     <dl>
                       <dt>Tracking</dt><dd><span data-ent="track" data-start>RA123456785GB</span></dd>
                       <dt>Arrives</dt><dd><span data-ent="date">Thursday 14 May</span></dd>
                       <dt>Deliver to</dt><dd><span data-ent="address">42 Juniper Lane, Brookfield</span></dd>
                     </dl>
-                    <p>Questions? Call <span data-ent="phone">+1 415 555 0142</span> or write to <span data-ent="email">help@hollis.example</span>. Your order is also at <span data-ent="url">hollis.example/orders</span>.</p>
+                    <p>Questions? Call <span data-ent="phone">+1 415 555 0142</span> or write to <span data-ent="email">help@hollisfurniture.shop</span>. Your order is also at <span data-ent="url">hollisfurniture.shop/orders</span>.</p>
                   </div>
                 </div>
               </div>
@@ -460,7 +466,7 @@ brew install --cask macos-lens</code></pre><button class="copy" type="button" da
           <a class="nav__logo" href="#top"><img class="brand-mark" src="assets/brand/mark.svg" alt="" width="26" height="26">macOS Lens</a>
           <p class="footer__lede">Circle to Search for the Mac, from the menu bar.</p>
         </div>
-        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li><a href="#watch">Watch</a></li><li><a href="#text">Text tools</a></li><li><a href="#privacy">Privacy</a></li><li><a href="#faq">FAQ</a></li></ul></div>
+        <div class="span-2 start-7 footer__col"><h3>Product</h3><ul><li data-reel-link hidden><a href="#watch">Watch</a></li><li><a href="#text">Text tools</a></li><li><a href="#privacy">Privacy</a></li><li><a href="#faq">FAQ</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Install</h3><ul><li><a href="#install">One-line installer</a></li><li><a href="#install">Homebrew</a></li><li><a href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Disk image</a></li></ul></div>
         <div class="span-2 footer__col"><h3>Project</h3><ul><li><a href="https://github.com/SharonHart/macos-lens">Source on GitHub</a></li><li><a href="https://github.com/SharonHart/macos-lens/issues">Report an issue</a></li><li><a href="https://buymeacoffee.com/sharonhart">Buy Me a Coffee</a></li></ul></div>
       </div>
