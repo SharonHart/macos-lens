@@ -150,7 +150,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         let search = shortcut, text = textShortcut
         status.button?.toolTip = "Search screen (\(search.title)) · select text (\(text.title)); " +
                                  "right-click for more"
-        launcherShortcutField?.stringValue = launcherShortcutText
+        setLauncherShortcutText()
         var problems: [String] = []
         for (shortcut, id, purpose) in [(search, Self.searchHotKey, "search"), (text, Self.textHotKey, "text")] {
             if shortcut.conflictsWithSystem(systemHotKeys()) {
@@ -175,6 +175,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         if !problems.isEmpty {
             showError(LensError.message(problems.joined(separator: "\n") + "\nChoose another shortcut in Settings."))
         }
+    }
+
+    private func setLauncherShortcutText() {
+        guard let field = launcherShortcutField, field.stringValue != launcherShortcutText else { return }
+        field.stringValue = launcherShortcutText
+        (launcherWindow?.contentView as? FormView)?.fitWindow()
     }
 
     private var launcherShortcutText: String {
@@ -798,51 +804,46 @@ final class AppController: NSObject, NSApplicationDelegate {
     /// Builds the launcher once. The native checks render it offscreen without showing it.
     func makeLauncherWindow() -> NSWindow {
         if let launcherWindow {
-            launcherShortcutField?.stringValue = launcherShortcutText
+            setLauncherShortcutText()
             return launcherWindow
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 318),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "macOS Lens"
         window.isReleasedWhenClosed = false
-        let root = window.contentView!
+        let form = FormView()
+        window.contentView = form
         let icon = NSImageView(image: LensMark.image(size: 36))
         icon.imageScaling = .scaleNone
         icon.contentTintColor = googleBlue
-        icon.frame = NSRect(x: 22, y: 262, width: 40, height: 40)
-        root.addSubview(icon)
-        let heading = NSTextField(labelWithString: "macOS Lens is running")
+        let heading = NSTextField(wrappingLabelWithString: "macOS Lens is running")
         heading.font = .boldSystemFont(ofSize: 16)
-        heading.frame = NSRect(x: 70, y: 274, width: 386, height: 24)
-        root.addSubview(heading)
-        let shortcutField = NSTextField(wrappingLabelWithString: "")
-        shortcutField.frame = NSRect(x: 24, y: 220, width: 432, height: 36)
+        form.add(.item(icon, .fixed(40), height: 40), .item(heading))
+        let shortcutField = NSTextField(wrappingLabelWithString: launcherShortcutText)
         launcherShortcutField = shortcutField
-        root.addSubview(shortcutField)
+        form.add(.item(shortcutField), gap: 14)
         let hint = NSTextField(wrappingLabelWithString:
             "Can't see the Lens icon in the menu bar? It may be hidden behind the camera notch " +
             "or turned off in System Settings → Menu Bar. Open macOS Lens again from Finder or " +
             "Spotlight to show this window.")
         hint.textColor = .secondaryLabelColor
-        hint.frame = NSRect(x: 24, y: 152, width: 432, height: 60)
-        root.addSubview(hint)
-        func button(_ title: String, _ action: Selector, x: CGFloat, y: CGFloat) -> NSButton {
+        form.add(.item(hint), gap: 8)
+        func button(_ title: String, _ action: Selector) -> FormView.Item {
             let button = NSButton(title: title, target: self, action: action)
-            button.frame = NSRect(x: x, y: y, width: 210, height: 32)
-            root.addSubview(button)
-            return button
+            // Room around the title, so the longest one doesn't touch the button's ends.
+            return .item(button, .fill(min: ceil(button.fittingSize.width) + 24))
         }
-        button("Search screen…", #selector(searchScreen), x: 24, y: 108).keyEquivalent = "\r"
-        _ = button("Select text on screen…", #selector(selectText), x: 246, y: 108)
-        _ = button("Fix Screen Recording permission…", #selector(fixScreenRecording), x: 24, y: 70)
-        _ = button("Settings & privacy…", #selector(showSettings), x: 246, y: 70)
-        let coffee = CoffeeButton(target: self, action: #selector(openSupportPage))
-        coffee.frame = NSRect(x: 24, y: 22, width: 210, height: 34)
-        root.addSubview(coffee)
-        _ = button("Quit macOS Lens", #selector(quit), x: 246, y: 24)
+        let search = button("Search screen…", #selector(searchScreen))
+        (search.view as? NSButton)?.keyEquivalent = "\r"
+        form.add(search, button("Select text on screen…", #selector(selectText)), gap: 18)
+        form.add(button("Fix Screen Recording permission…", #selector(fixScreenRecording)),
+                 button("Settings & privacy…", #selector(showSettings)), gap: 8)
+        form.add(.item(CoffeeButton(target: self, action: #selector(openSupportPage)), height: 34),
+                 button("Quit macOS Lens", #selector(quit)), gap: 14)
+        form.fitWindow(width: max(480, form.naturalWidth))
+        form.letUserResize(window)
         launcherWindow = window
         window.center()
-        launcherShortcutField?.stringValue = launcherShortcutText
         return window
     }
 
@@ -866,55 +867,48 @@ final class AppController: NSObject, NSApplicationDelegate {
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "macOS Lens — Settings & privacy"
         window.isReleasedWhenClosed = false
-        let root = window.contentView!
-        func label(_ text: String, x: CGFloat = 24, y: CGFloat, width: CGFloat = 550, height: CGFloat = 24,
-                   bold: Bool = false) {
+        let form = FormView()
+        window.contentView = form
+        func label(_ text: String, bold: Bool = false) -> NSTextField {
             let field = NSTextField(wrappingLabelWithString: text)
-            field.frame = NSRect(x: x, y: y, width: width, height: height)
             if bold { field.font = .boldSystemFont(ofSize: 18) }
-            root.addSubview(field)
+            return field
+        }
+        func fixed(_ button: NSButton, _ width: CGFloat) -> FormView.Item {
+            .item(button, .fixed(max(width, ceil(button.fittingSize.width))))
         }
         let mark = NSImageView(image: LensMark.image(size: 30))
         mark.imageScaling = .scaleNone
         mark.contentTintColor = googleBlue
-        mark.frame = NSRect(x: 22, y: 569, width: 32, height: 32)
-        root.addSubview(mark)
-        label("Circle to Search, adapted for your Mac", x: 62, y: 572, width: 512, bold: true)
-        label("Press the shortcut or use the menu-bar Lens icon. The screen freezes in place and starts fully " +
-              "selected. Circle, highlight, scribble or tap something to search it, drag the corners or edges to " +
-              "adjust, and drag inside to move. Switch to Text at the bottom (or use the text shortcut) to select " +
-              "words, then copy, listen, translate in place or search them. Pinch or scroll with two fingers to zoom " +
-              "and pan. Escape, ✕ or swiping the results down closes it.", y: 478, height: 88)
-        label("Screen capture, text recognition, Listen and Apple translation stay on this Mac. Visual search sends " +
-              "ONLY the area inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you " +
-              "pause adjusting it. Text search and Google Translate send only the text you choose, after asking. " +
-              "Your browser's cookies are never read and no public image host is used.", y: 398, height: 74)
+        form.add(.item(mark, .fixed(32), height: 32), .item(label("Circle to Search, adapted for your Mac", bold: true)))
+        form.add(.item(label(
+            "Press the shortcut or use the menu-bar Lens icon. The screen freezes in place and starts fully " +
+            "selected. Circle, highlight, scribble or tap something to search it, drag the corners or edges to " +
+            "adjust, and drag inside to move. Switch to Text at the bottom (or use the text shortcut) to select " +
+            "words, then copy, listen, translate in place or search them. Pinch or scroll with two fingers to zoom " +
+            "and pan. Escape, ✕ or swiping the results down closes it.")), gap: 10)
+        form.add(.item(label(
+            "Screen capture, text recognition, Listen and Apple translation stay on this Mac. Visual search sends " +
+            "ONLY the area inside the selection to Google — the WHOLE SCREEN unless you shrink it — each time you " +
+            "pause adjusting it. Text search and Google Translate send only the text you choose, after asking. " +
+            "Your browser's cookies are never read and no public image host is used.")), gap: 10)
         let checkbox = NSButton(checkboxWithTitle: "Allow visual search (experimental Google Lens image upload)",
                                 target: self, action: #selector(toggleUpload(_:)))
-        checkbox.frame = NSRect(x: 24, y: 368, width: 550, height: 24)
         checkbox.state = uploadAllowed ? .on : .off
         uploadCheckbox = checkbox
-        root.addSubview(checkbox)
-        label("This uses an undocumented Google endpoint, not an official API, and can stop working. Results load " +
-              "in the sheet on the right of the screen, where Google may show rate-limit (429), consent or sign-in " +
-              "pages. “Open in browser” lets the browser upload the same selection itself.", y: 302, height: 60)
-        label("Browser for “Open in browser”, links and text search", y: 270)
-        let browser = NSTextField(labelWithString: browserDescription())
-        browser.frame = NSRect(x: 24, y: 243, width: 318, height: 24)
-        browser.lineBreakMode = .byTruncatingMiddle
+        form.add(.item(checkbox, .fit), gap: 14)
+        form.add(.item(label(
+            "This uses an undocumented Google endpoint, not an official API, and can stop working. Results load " +
+            "in the sheet on the right of the screen, where Google may show rate-limit (429), consent or sign-in " +
+            "pages. “Open in browser” lets the browser upload the same selection itself.")), gap: 6)
+        form.add(.item(label("Browser for “Open in browser”, links and text search")), gap: 18)
+        let browser = label(browserDescription())
         browserField = browser
-        root.addSubview(browser)
-        let choose = NSButton(title: "Choose…", target: self, action: #selector(chooseBrowser))
-        choose.frame = NSRect(x: 352, y: 241, width: 110, height: 28)
-        root.addSubview(choose)
-        let useDefault = NSButton(title: "Use default", target: self, action: #selector(useDefaultBrowser))
-        useDefault.frame = NSRect(x: 464, y: 241, width: 110, height: 28)
-        root.addSubview(useDefault)
-        label("Search shortcut", y: 206, width: 265)
-        label("Text shortcut", x: 309, y: 206, width: 265)
+        form.add(.item(browser), fixed(NSButton(title: "Choose…", target: self, action: #selector(chooseBrowser)), 110),
+                 fixed(NSButton(title: "Use default", target: self, action: #selector(useDefaultBrowser)), 110), gap: 6)
         let systemKeys = systemHotKeys()
-        func popup(_ options: [Shortcut], selected: Shortcut, x: CGFloat, action: Selector) {
-            let popup = NSPopUpButton(frame: NSRect(x: x, y: 176, width: 265, height: 28))
+        func popup(_ title: String, _ options: [Shortcut], selected: Shortcut, action: Selector) -> FormView.Item {
+            let popup = NSPopUpButton()
             popup.autoenablesItems = false
             for option in options {
                 let used = option.conflictsWithSystem(systemKeys)
@@ -925,25 +919,27 @@ final class AppController: NSObject, NSApplicationDelegate {
             popup.selectItem(at: options.firstIndex(of: selected) ?? 0)
             popup.target = self
             popup.action = action
-            root.addSubview(popup)
+            // Wide enough for any title it can show; the open menu shows unavailable shortcuts in full anyway.
+            let sizing = NSPopUpButton()
+            sizing.addItems(withTitles: options.filter { !$0.conflictsWithSystem(systemKeys) }.map(\.title))
+            let column = FormView()
+            column.margin = 0
+            column.add(.item(label(title)))
+            column.add(.item(popup, .fill(min: max(180, ceil(sizing.fittingSize.width)))), gap: 6)
+            return .item(column)
         }
-        popup(Shortcut.all, selected: shortcut, x: 24, action: #selector(changeShortcut(_:)))
-        popup(Shortcut.textOptions, selected: textShortcut, x: 309, action: #selector(changeTextShortcut(_:)))
-        label("Screen Recording: each new build of this unsigned app needs the switch turned on again.", y: 134,
-              height: 20)
-        let fix = NSButton(title: "Fix Screen Recording permission…", target: self,
-                           action: #selector(fixScreenRecording))
-        fix.frame = NSRect(x: 24, y: 98, width: 265, height: 30)
-        root.addSubview(fix)
-        let coffee = CoffeeButton(target: self, action: #selector(openSupportPage))
-        coffee.frame = NSRect(x: 309, y: 96, width: 200, height: 34)
-        root.addSubview(coffee)
-        let done = NSButton(title: "Save settings", target: self, action: #selector(saveSettings))
-        done.frame = NSRect(x: 444, y: 22, width: 130, height: 30)
-        root.addSubview(done)
-        let text = NSButton(title: "Try local OCR", target: self, action: #selector(tryOCR))
-        text.frame = NSRect(x: 24, y: 22, width: 150, height: 30)
-        root.addSubview(text)
+        form.add(popup("Search shortcut", Shortcut.all, selected: shortcut, action: #selector(changeShortcut(_:))),
+                 popup("Text shortcut", Shortcut.textOptions, selected: textShortcut,
+                       action: #selector(changeTextShortcut(_:))), gap: 18)
+        form.add(.item(label("Screen Recording: each new build of this unsigned app needs the switch turned on again.")),
+                 gap: 22)
+        form.add(.item(NSButton(title: "Fix Screen Recording permission…", target: self,
+                                action: #selector(fixScreenRecording))),
+                 .item(CoffeeButton(target: self, action: #selector(openSupportPage)), height: 34), gap: 8)
+        form.add(fixed(NSButton(title: "Try local OCR", target: self, action: #selector(tryOCR)), 150), .spacer(),
+                 fixed(NSButton(title: "Save settings", target: self, action: #selector(saveSettings)), 130), gap: 28)
+        form.fitWindow(width: max(600, form.naturalWidth))
+        form.letUserResize(window)
         settingsWindow = window
         window.center()
         return window
@@ -980,12 +976,17 @@ final class AppController: NSObject, NSApplicationDelegate {
             return
         }
         defaults.set(url.path, forKey: "browserPath")
-        browserField?.stringValue = browserDescription()
+        updateBrowserField()
     }
 
     @objc private func useDefaultBrowser() {
         defaults.removeObject(forKey: "browserPath")
+        updateBrowserField()
+    }
+
+    private func updateBrowserField() {
         browserField?.stringValue = browserDescription()
+        (settingsWindow?.contentView as? FormView)?.fitWindow()
     }
 
     @objc private func saveSettings() {

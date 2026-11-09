@@ -675,13 +675,15 @@ enum NativeChecks {
                                                ("Settings header", settings.window, 30.0, settings.bitmap)] {
             let icon = window.contentView?.subviews.compactMap { $0 as? NSImageView }.first { $0.image?.isTemplate == true }
             let scale = CGFloat(rendered.width) / (window.contentView?.bounds.width ?? 1)
-            let centre = icon.map { CGPoint(x: $0.frame.midX * scale, y: $0.frame.midY * scale) } ?? .zero
-            let colour = rendered.rgb(Int(centre.x), Int(centre.y))
+            let centre = icon.map { $0.convert(NSPoint(x: $0.bounds.midX, y: $0.bounds.midY), to: nil) } ?? .zero
+            let colour = rendered.rgb(Int(centre.x * scale), Int(centre.y * scale))
             check(icon?.image?.size == NSSize(width: side, height: side) && icon?.contentTintColor == googleBlue &&
                   colour.b > 0.85 && colour.r < 0.4 && colour.g < 0.65,
                   "the \(name) shows the shared \(Int(side)) pt mark, drawn in Google blue")
-            window.close()
         }
+        try fitChecks(check: check, launcher.window, settings.window, folder)
+        launcher.window.close()
+        settings.window.close()
 
         guard let folder else { return }
         let mark = LensMark.image(size: LensMark.menuBarSize)
@@ -715,6 +717,109 @@ enum NativeChecks {
             rect.fill()
             tinted(large, in: NSRect(x: 16, y: 16, width: 128, height: 128), googleBlue)
         }, to: folder.appendingPathComponent("mark.large.png"))
+    }
+
+    /// Every label and button in the launcher and Settings fits its frame, so no text is clipped or truncated, at
+    /// the windows' own widths, at the narrowest width their layout supports and when much wider. The windows grow
+    /// to fit and nothing overlaps.
+    private static func fitChecks(check: (Bool, String) -> Void, _ launcher: NSWindow, _ settings: NSWindow,
+                                  _ folder: URL?) throws {
+        func textFits(_ field: NSTextField) -> (needed: CGSize, fits: Bool) {
+            let bounds = NSRect(x: 0, y: 0, width: field.frame.width, height: .greatestFiniteMagnitude)
+            let cell = field.cell?.cellSize(forBounds: bounds) ?? .zero
+            let fitting = field.fittingSize
+            // The height is also measured apart from the cell, from the text's own line layout inside the cell's
+            // 2 pt side insets. Its width counts the space at each line break, so it is not used.
+            let text = field.attributedStringValue.boundingRect(
+                with: NSSize(width: field.frame.width - 4, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading])
+            let needed = CGSize(width: max(cell.width, fitting.width),
+                                height: max(cell.height, fitting.height, ceil(text.height)))
+            return (needed, needed.width <= field.frame.width + 0.5 && needed.height <= field.frame.height + 0.5)
+        }
+        func problems(in form: FormView) -> [String] {
+            var found: [String] = []
+            let views = form.arrangedViews
+            for view in views {
+                let frame = view.convert(view.bounds, to: form)
+                let name = (view as? NSTextField)?.stringValue ?? (view as? NSButton)?.title ?? "\(type(of: view))"
+                let short = String(name.prefix(32))
+                if !form.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame) { found.append("\(short) is outside the window") }
+                if let field = view as? NSTextField {
+                    let (needed, fits) = textFits(field)
+                    if !fits {
+                        found.append("\(short) needs \(fmt(needed.width))×\(fmt(needed.height)) of " +
+                                     "\(fmt(frame.width))×\(fmt(frame.height))")
+                    }
+                } else if let control = view as? NSControl {
+                    var fitting = control.fittingSize
+                    if let popup = control as? NSPopUpButton {
+                        // A closed pop-up shows only its selected title.
+                        let shown = NSPopUpButton()
+                        shown.font = popup.font
+                        shown.addItem(withTitle: popup.titleOfSelectedItem ?? "")
+                        fitting = shown.fittingSize
+                    }
+                    if fitting.width > frame.width + 0.5 || fitting.height > frame.height + 0.5 {
+                        found.append("\(short) needs \(fmt(fitting.width))×\(fmt(fitting.height)) of " +
+                                     "\(fmt(frame.width))×\(fmt(frame.height))")
+                    }
+                }
+            }
+            let solid = views.filter { $0.frame.height > 0 }.map { $0.convert($0.bounds, to: form) }
+            for (index, frame) in solid.enumerated() where solid[(index + 1)...].contains(where: { $0.intersects(frame) }) {
+                found.append("overlap at \(fmt(frame.minX)),\(fmt(frame.minY))")
+            }
+            return found
+        }
+        for (name, window) in [("launcher", launcher), ("Settings", settings)] {
+            guard let form = window.contentView as? FormView else {
+                check(false, "the \(name) window is laid out by a FormView")
+                continue
+            }
+            let width = form.bounds.width
+            for test in [form.minimumWidth, width, width * 1.5] {
+                form.fitWindow(width: test)
+                let found = problems(in: form)
+                let fitted = abs(window.contentLayoutRect.height - form.place(width: form.bounds.width)) < 1
+                check(found.isEmpty && fitted && abs(form.bounds.width - test) < 1,
+                      "every \(name) label and button fits its frame at \(Int(test)) pt wide, the window is " +
+                      "\(Int(form.bounds.height)) pt tall to fit and nothing overlaps" +
+                      (found.isEmpty ? "" : ": " + found.joined(separator: "; ")))
+                if test == form.minimumWidth {
+                    _ = try preview(window, folder, "mark.\(name.lowercased()).narrow.png")
+                }
+            }
+            // Dragging the window narrower than the narrowest layout, or to any height, keeps the content's height.
+            for (proposed, expected) in [(NSSize(width: form.minimumWidth - 120, height: 120), form.minimumWidth),
+                                         (NSSize(width: width + 140, height: 2000), width + 140)] {
+                let frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: proposed)).size
+                let size = form.windowWillResize(window, to: frame)
+                window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+                let found = problems(in: form)
+                let fitted = abs(form.bounds.height - form.place(width: form.bounds.width)) < 1
+                check(window.styleMask.contains(.resizable) && window.delegate === form && found.isEmpty && fitted &&
+                      abs(form.bounds.width - expected) < 1,
+                      "dragging the \(name) window to \(Int(proposed.width))×\(Int(proposed.height)) pt gives " +
+                      "\(Int(form.bounds.width))×\(Int(form.bounds.height)), with every label and button in full" +
+                      (found.isEmpty ? "" : ": " + found.joined(separator: "; ")))
+            }
+            form.fitWindow(width: width)
+        }
+        // The text and button that used to be cut off.
+        let views = (settings.contentView as? FormView)?.arrangedViews ?? []
+        for start in ["Screen capture, text recognition", "This uses an undocumented Google endpoint"] {
+            let field = views.compactMap { $0 as? NSTextField }.first { $0.stringValue.hasPrefix(start) }
+            let result = field.map(textFits)
+            check(result?.fits == true && field?.stringValue.hasSuffix(".") == true,
+                  "the Settings paragraph \"\(start)…\" wraps in full: it needs \(fmt(result?.needed.height ?? 0)) of " +
+                  "\(fmt(field?.frame.height ?? 0)) pt")
+        }
+        let fix = ((launcher.contentView as? FormView)?.arrangedViews ?? []).compactMap { $0 as? NSButton }
+            .first { $0.title == "Fix Screen Recording permission…" }
+        check(fix.map { $0.fittingSize.width <= $0.frame.width + 0.5 } == true,
+              "the launcher's \"Fix Screen Recording permission…\" title fits: it needs " +
+              "\(fmt(fix?.fittingSize.width ?? 0)) of \(fmt(fix?.frame.width ?? 0)) pt")
     }
 
     /// Draws a template image in `colour`, as the menu bar, buttons and image views do.
