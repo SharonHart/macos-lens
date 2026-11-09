@@ -47,9 +47,17 @@ enum Layout {
     static let applications = CGPoint(x: 490, y: 190)
     static let wordmarkCentre: CGFloat = 72
     static let wordmarkSize: CGFloat = 34
-    static let captionCentre: CGFloat = 346
+    static let captionCentre: CGFloat = 334
     static let captionSize: CGFloat = 16
     static let caption = "Drag to Applications to install"
+    /// The way past Gatekeeper's "Not Opened" dialog for a release that isn't notarized; the buttons are in bold.
+    static let hintCentre: CGFloat = 367
+    static let hintSize: CGFloat = 12.5
+    static let hintMargin: CGFloat = 24
+    static let hint: [(text: String, strong: Bool)] = [
+        ("If macOS can’t verify macOS Lens, click ", false), ("Done", true),
+        (", then System Settings › Privacy & Security › ", false), ("Open Anyway", true), (".", false),
+    ]
     /// Finder draws icon labels black in light mode and white in dark mode, whatever the background. Between these
     /// lines the background is one flat colour that keeps both at 4.5:1 or better.
     static let labelBand: ClosedRange<CGFloat> = 240...316
@@ -179,6 +187,25 @@ func textLine(_ string: String, font: CTFont, color: CGColor, tracking: CGFloat 
     return (line, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) - tracking)
 }
 
+/// One line in two weights of the same font, with no glyphs from a fallback font.
+func mixedLine(_ parts: [(text: String, strong: Bool)], regular: CTFont, strong: CTFont, color: CGColor) throws -> (line: CTLine, width: CGFloat) {
+    let string = NSMutableAttributedString()
+    for part in parts {
+        string.append(NSAttributedString(string: part.text, attributes: [
+            NSAttributedString.Key(kCTFontAttributeName as String): part.strong ? strong : regular,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
+        ]))
+    }
+    let line = CTLineCreateWithAttributedString(string)
+    let family = CTFontCopyFamilyName(regular) as String
+    for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+        let attributes = CTRunGetAttributes(run) as NSDictionary
+        let font = attributes[kCTFontAttributeName as String] as! CTFont
+        guard CTFontCopyFamilyName(font) as String == family else { throw Failure("a glyph fell back to \(CTFontCopyFamilyName(font))") }
+    }
+    return (line, CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)))
+}
+
 func draw(_ line: CTLine, x: CGFloat, baseline: CGFloat, in context: CGContext) {
     context.saveGState()
     context.textMatrix = .identity
@@ -190,7 +217,7 @@ func draw(_ line: CTLine, x: CGFloat, baseline: CGFloat, in context: CGContext) 
 // MARK: - Background
 
 /// The window background: a Lens-blue wash, darker at the top and bottom, flat behind the icon labels, with the
-/// mark and wordmark, an arrow from the app to Applications, and the caption.
+/// mark and wordmark, an arrow from the app to Applications, the caption, and how to get past Gatekeeper.
 func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool) throws {
     let context = canvas.context
     let height = canvas.size.height
@@ -242,26 +269,41 @@ func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool) throws {
     let captionCap = CTFontGetCapHeight(captionFont)
     draw(caption.line, x: ((canvas.size.width - caption.width) / 2).rounded(),
          baseline: canvas.y(top: Layout.captionCentre + captionCap / 2), in: context)
+
+    let hintFont = try brandFont(font, size: Layout.hintSize, weight: 500)
+    let hint = try mixedLine(Layout.hint, regular: hintFont, strong: try brandFont(font, size: Layout.hintSize, weight: 700), color: white)
+    guard hint.width <= canvas.size.width - 2 * Layout.hintMargin else {
+        throw Failure(String(format: "the hint is %.0f pt wide; it needs to fit in %.0f pt", hint.width, canvas.size.width - 2 * Layout.hintMargin))
+    }
+    draw(hint.line, x: ((canvas.size.width - hint.width) / 2).rounded(),
+         baseline: canvas.y(top: Layout.hintCentre + CTFontGetCapHeight(hintFont) / 2), in: context)
 }
 
-/// Fails unless Finder's labels and our white text keep at least 4.5:1 against the background under them.
-func checkContrast(_ plain: Canvas) throws {
+/// Fails unless Finder's labels and our white text keep at least 4.5:1 against the background under them, and
+/// returns the lowest contrast for the labels and for the white text.
+@discardableResult
+func checkContrast(_ plain: Canvas) throws -> (labels: Double, text: Double) {
+    var lowest = (labels: Double.infinity, text: Double.infinity)
     let black = 0.0, white = 1.0
     for rect in Layout.labelRects {
         let lums = plain.pixels(inTop: rect).map(\.luminance)
         guard let low = lums.min(), let high = lums.max() else { throw Failure("no pixels under a label") }
         let worst = min(RGB.contrast(low, black), RGB.contrast(high, white))
         guard worst >= 4.5 else { throw Failure(String(format: "label contrast %.2f:1 (luminance %.3f…%.3f)", worst, low, high)) }
+        lowest.labels = min(lowest.labels, worst)
     }
     let textRects = [
         CGRect(x: 150, y: Layout.wordmarkCentre - 24, width: 360, height: 48),
         CGRect(x: 180, y: Layout.captionCentre - 14, width: 300, height: 28),
+        CGRect(x: Layout.hintMargin, y: Layout.hintCentre - 11, width: Layout.window.width - 2 * Layout.hintMargin, height: 22),
     ]
     for rect in textRects {
         guard let high = plain.pixels(inTop: rect).map(\.luminance).max(), RGB.contrast(high, white) >= 4.5 else {
             throw Failure("white text falls below 4.5:1 at \(rect)")
         }
+        lowest.text = min(lowest.text, RGB.contrast(high, white))
     }
+    return lowest
 }
 
 // MARK: - App icon
@@ -338,7 +380,8 @@ func render(into directory: URL, font: URL) throws {
     for scale in [1, 2] as [CGFloat] {
         let plain = Canvas(size: Layout.window, scale: scale)
         try plain.draw { _ in try drawBackground(on: plain, font: font, withArtwork: false) }
-        try checkContrast(plain)
+        let contrast = try checkContrast(plain)
+        if scale == 1 { print(String(format: "lowest contrast: %.2f:1 for Finder's labels, %.2f:1 for our white text", contrast.labels, contrast.text)) }
         let canvas = Canvas(size: Layout.window, scale: scale)
         try canvas.draw { _ in try drawBackground(on: canvas, font: font, withArtwork: true) }
         try canvas.writePNG(to: directory.appendingPathComponent(scale == 1 ? "background.png" : "background@2x.png"))
