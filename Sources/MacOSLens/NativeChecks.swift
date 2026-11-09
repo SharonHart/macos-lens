@@ -117,6 +117,10 @@ enum NativeChecks {
             check(view.isWhole && view.pixelRect == full && !view.isDimmed && view.outlineFrame == nil &&
                   near(view.bracketFrame, bounds.insetBy(dx: 10, dy: 10)),
                   "the whole screen starts selected, shown as corner brackets with no border or dimming")
+            let lensImage = view.lensButton.image
+            check(lensImage?.isTemplate == true && lensImage?.size == NSSize(width: 28, height: 28) &&
+                  lensImage?.accessibilityDescription == LensMark.label && view.lensButton.contentTintColor == googleBlue,
+                  "the search bar shows the shared 28 pt mark in Google blue")
             let group = view.barFrame.union(view.translateFrame)
             check(abs(group.midX - bounds.midX) <= 1 && view.barFrame.minY < 40 &&
                   view.field.placeholderString == "Add to your search" && view.bar.superview === view &&
@@ -392,12 +396,19 @@ enum NativeChecks {
                 panel.update(.idle, allowed: false)
                 view.layoutSubtreeIfNeeded()
                 try save(view, nil)
+                if let folder = snapshot?.deletingLastPathComponent(), let whole = Self.snapshot(view, scale: 2) {
+                    let area = view.bar.frame.insetBy(dx: -24, dy: -24).intersection(view.bounds)
+                    let crop = CGRect(x: area.minX * 2, y: (view.bounds.height - area.maxY) * 2,
+                                      width: area.width * 2, height: area.height * 2).integral
+                    if let bar = whole.cropping(to: crop) { try write(bar, to: folder.appendingPathComponent("mark.bar.png")) }
+                }
             }
             window.close()
 
             try textChecks(check: check, spin: spin, gesture: gesture, click: click, chip: chip, press: press,
                            midDrag: { midDrag = $0 }, key: key, save: save, board: board, speaker: speaker,
                            suite: suite)
+            try markChecks(check: check, folder: snapshot?.deletingLastPathComponent())
         } catch {
             failures += 1
             fputs("FAIL native checks: \(error.localizedDescription)\n", stderr)
@@ -611,22 +622,152 @@ enum NativeChecks {
               "a sheet width set by dragging is remembered for the next activation")
     }
 
+    // MARK: - Mark
+
+    /// The shared mark at the sizes it is shown at, drawn offscreen at 1x and 2x, and where the app shows it. With a
+    /// folder, also writes preview images of the menu bar, the launcher and Settings there.
+    private static func markChecks(check: (Bool, String) -> Void, folder: URL?) throws {
+        check(LensMark.metrics(side: 18, scale: 1).stroke == 2 && LensMark.metrics(side: 18, scale: 2).stroke == 2,
+              "the 18 pt menu-bar mark has 2 pt corner strokes at 1x and 2x")
+        for side in [16, 18, 22] as [CGFloat] {
+            let image = LensMark.image(size: side)
+            check(image.isTemplate && image.size == NSSize(width: side, height: side) &&
+                  image.accessibilityDescription == LensMark.label,
+                  "the \(Int(side)) pt mark is a square template image labelled for accessibility")
+            for scale in [1, 2] as [CGFloat] {
+                guard let bitmap = Bitmap(try rendered(image.size, scale: scale, { rect in
+                    NSColor.white.setFill()
+                    rect.fill()
+                    image.draw(in: rect)
+                })) else { throw LensError.message("Could not read the rendered mark.") }
+                let n = bitmap.width
+                func ink(_ x: Int, _ y: Int) -> CGFloat { 1 - bitmap.luma(x, y) }
+                let (stroke, arm) = LensMark.metrics(side: side, scale: scale)
+                let strokePixels = Int((stroke * scale).rounded())
+                let row = Int(((side - arm) * scale).rounded())
+                let crisp = ink(0, row) > 0.85 && ink(strokePixels - 1, row) > 0.85 && ink(strokePixels, row) < 0.15 &&
+                    ink(n - 1, n - 1 - row) > 0.85 && ink(n - strokePixels, n - 1 - row) > 0.85 &&
+                    ink(n - 1 - strokePixels, n - 1 - row) < 0.15
+                let open = [ink(n / 2, n - 1), ink(n / 2, 0), ink(0, n / 2), ink(n - 1, n / 2)].allSatisfy { $0 < 0.1 }
+                let coverage = (0..<n).reduce(CGFloat(0)) { sum, y in sum + (0..<n).reduce(0) { $0 + ink($1, y) } } /
+                    CGFloat(n * n)
+                let columns = Int(CGFloat(n) * 0.44)...Int(CGFloat(n) * 0.56)
+                let rows = (0..<n).filter { y in columns.contains { ink($0, y) > 0.5 } }
+                let height = CGFloat((rows.max() ?? 0) - (rows.min() ?? 0) + 1) / CGFloat(n)
+                let width = CGFloat((0..<n).filter { ink($0, n / 2) > 0.5 }.count) / CGFloat(n)
+                let unit = side * scale * LensMark.appleShare / 100
+                let body = Int(CGFloat(n) / 2 - 44 * unit)..<Int(CGFloat(n) / 2 + 12 * unit)
+                let mismatch = body.reduce(CGFloat(0)) { sum, y in
+                    sum + (0..<n / 2).reduce(0) { $0 + abs(ink($1, y) - ink(n - 1 - $1, y)) }
+                } / CGFloat(body.count * n / 2)
+                check(crisp && open && ink(n / 2, n / 2) > 0.9 && (0.15...0.55).contains(coverage) &&
+                      (0.5...0.66).contains(height) && (0.45...0.62).contains(width) && mismatch < 0.03,
+                      "the \(Int(side)) pt mark at \(Int(scale))x has pixel-sharp corners and a solid centred apple " +
+                      "with a symmetric body and no bite (apple \(fmt(height)) × \(fmt(width)) of the box, " +
+                      "ink \(fmt(coverage)), asymmetry \(fmt(mismatch)))")
+            }
+        }
+
+        let controller = AppController()
+        let launcher = try preview(controller.makeLauncherWindow(), folder, "mark.launcher.png")
+        let settings = try preview(controller.makeSettingsWindow(), folder, "mark.settings.png")
+        for (name, window, side, rendered) in [("launcher", launcher.window, 36.0, launcher.bitmap),
+                                               ("Settings header", settings.window, 30.0, settings.bitmap)] {
+            let icon = window.contentView?.subviews.compactMap { $0 as? NSImageView }.first { $0.image?.isTemplate == true }
+            let scale = CGFloat(rendered.width) / (window.contentView?.bounds.width ?? 1)
+            let centre = icon.map { CGPoint(x: $0.frame.midX * scale, y: $0.frame.midY * scale) } ?? .zero
+            let colour = rendered.rgb(Int(centre.x), Int(centre.y))
+            check(icon?.image?.size == NSSize(width: side, height: side) && icon?.contentTintColor == googleBlue &&
+                  colour.b > 0.85 && colour.r < 0.4 && colour.g < 0.65,
+                  "the \(name) shows the shared \(Int(side)) pt mark, drawn in Google blue")
+            window.close()
+        }
+
+        guard let folder else { return }
+        let mark = LensMark.image(size: LensMark.menuBarSize)
+        for (scale, suffix) in [(CGFloat(1), "1x"), (2, "2x")] {
+            for (theme, background, foreground) in [("light", NSColor(white: 0.93, alpha: 1), NSColor(white: 0, alpha: 0.85)),
+                                                    ("dark", NSColor(white: 0.14, alpha: 1), NSColor.white)] {
+                let strip = try rendered(NSSize(width: 168, height: 24), scale: scale) { rect in
+                    background.setFill()
+                    rect.fill()
+                    tinted(mark, in: NSRect(x: 10, y: 3, width: 18, height: 18), foreground)
+                    var x: CGFloat = 40
+                    for name in ["wifi", "battery.75"] {
+                        let symbol = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+                            .withSymbolConfiguration(.init(pointSize: 14, weight: .regular))
+                        if let symbol {
+                            tinted(symbol, in: NSRect(x: x, y: (24 - symbol.size.height) / 2, width: symbol.size.width,
+                                                      height: symbol.size.height), foreground)
+                            x += symbol.size.width + 12
+                        }
+                    }
+                    ("Mon 9:41" as NSString).draw(at: NSPoint(x: x, y: 4), withAttributes: [
+                        .font: NSFont.menuBarFont(ofSize: 0), .foregroundColor: foreground
+                    ])
+                }
+                try write(strip, to: folder.appendingPathComponent("mark.menubar.\(suffix).\(theme).png"))
+            }
+        }
+        let large = LensMark.image(size: 128)
+        try write(try rendered(NSSize(width: 160, height: 160), scale: 2) { rect in
+            NSColor.white.setFill()
+            rect.fill()
+            tinted(large, in: NSRect(x: 16, y: 16, width: 128, height: 128), googleBlue)
+        }, to: folder.appendingPathComponent("mark.large.png"))
+    }
+
+    /// Draws a template image in `colour`, as the menu bar, buttons and image views do.
+    private static func tinted(_ image: NSImage, in rect: NSRect, _ colour: NSColor) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        image.draw(in: rect)
+        colour.setFill()
+        rect.fill(using: .sourceAtop)
+        context.endTransparencyLayer()
+    }
+
+    /// A window's content as AppKit draws it at 2x, written to `folder` when there is one. The window is never shown.
+    private static func preview(_ window: NSWindow, _ folder: URL?, _ name: String) throws
+        -> (window: NSWindow, bitmap: Bitmap) {
+        guard let root = window.contentView,
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(root.bounds.width * 2),
+                                         pixelsHigh: Int(root.bounds.height * 2), bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0,
+                                         bitsPerPixel: 0) else {
+            throw LensError.message("Could not render the \(window.title) window.")
+        }
+        rep.size = root.bounds.size
+        root.layoutSubtreeIfNeeded()
+        root.cacheDisplay(in: root.bounds, to: rep)
+        guard let image = rep.cgImage, let bitmap = Bitmap(image) else {
+            throw LensError.message("Could not read the \(window.title) window.")
+        }
+        if let folder { try write(image, to: folder.appendingPathComponent(name)) }
+        return (window, bitmap)
+    }
+
     // MARK: - Fixtures and rendering
 
     private static func fmt(_ value: CGFloat) -> String { String(format: "%.2f", Double(value)) }
 
     /// A 1200×700 point Retina image drawn by `draw`, standing in for a screen.
     private static func drawn(_ draw: (NSSize) -> Void) throws -> CGImage {
-        let size = NSSize(width: 1200, height: 700)
-        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2400, pixelsHigh: 1400,
-                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        try rendered(NSSize(width: 1200, height: 700), scale: 2) { draw($0.size) }
+    }
+
+    /// An image `size` points large with `scale` pixels per point, drawn by `draw` with AppKit.
+    private static func rendered(_ size: NSSize, scale: CGFloat, _ draw: (NSRect) -> Void) throws -> CGImage {
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int((size.width * scale).rounded()),
+                                            pixelsHigh: Int((size.height * scale).rounded()), bitsPerSample: 8,
+                                            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
                                             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else {
             throw LensError.message("Could not generate the test image.")
         }
         bitmap.size = size
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        draw(size)
+        draw(NSRect(origin: .zero, size: size))
         NSGraphicsContext.restoreGraphicsState()
         guard let image = bitmap.cgImage else { throw LensError.message("Could not generate the test image.") }
         return image
@@ -672,17 +813,19 @@ enum NativeChecks {
         return NSEvent(cgEvent: event)
     }
 
-    /// The view as drawn, one pixel per point.
-    private static func snapshot(_ view: NSView) -> CGImage? {
+    /// The view as drawn, `scale` pixels per point.
+    private static func snapshot(_ view: NSView, scale: CGFloat = 1) -> CGImage? {
         // AppKit attaches subview layers to the tree during a display pass.
         view.layoutSubtreeIfNeeded()
         view.displayIfNeeded()
         CATransaction.flush()
         if view.layer?.sublayers == nil { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
         guard let layer = view.layer,
-              let context = CGContext(data: nil, width: Int(view.bounds.width), height: Int(view.bounds.height),
-                                      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+              let context = CGContext(data: nil, width: Int(view.bounds.width * scale),
+                                      height: Int(view.bounds.height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
         layer.render(in: context)
         return context.makeImage()
     }

@@ -248,7 +248,13 @@ final class OverlayView: NSView {
                               action: Selector) {
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: label) ??
             NSImage(systemSymbolName: fallback, accessibilityDescription: label)
-        button.image = image?.withSymbolConfiguration(.init(pointSize: size, weight: weight))
+        imageButton(button, image?.withSymbolConfiguration(.init(pointSize: size, weight: weight)), tint: tint,
+                    label: label, action: action)
+    }
+
+    private func imageButton(_ button: NSButton, _ image: NSImage?, tint: NSColor = .labelColor, label: String,
+                             action: Selector) {
+        button.image = image
         button.imagePosition = .imageOnly
         button.isBordered = false
         button.bezelStyle = .regularSquare
@@ -260,8 +266,9 @@ final class OverlayView: NSView {
     }
 
     private func buildControls() {
-        symbolButton(lensButton, "camera.viewfinder", fallback: "viewfinder", size: 23, weight: .heavy,
-                     tint: googleBlue, label: "Search the selection now (Return)", action: #selector(lensPressed))
+        imageButton(lensButton, LensMark.image(size: 28), tint: googleBlue, label: "Search the selection now (Return)",
+                    action: #selector(lensPressed))
+        lensButton.imageScaling = .scaleNone
         modeControl.segmentCount = 2
         modeControl.trackingMode = .selectOne
         modeControl.segmentStyle = .capsule

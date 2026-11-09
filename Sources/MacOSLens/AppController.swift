@@ -51,18 +51,11 @@ final class AppController: NSObject, NSApplicationDelegate {
                                   "com.apple.symbolichotkeys" as CFString) as? [String: Any]
     }
 
-    /// The Lens-style mark used in the menu bar, the launcher and the overlay's search bar.
-    static func mark(size: CGFloat) -> NSImage? {
-        NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: "macOS Lens")?
-            .withSymbolConfiguration(.init(pointSize: size, weight: .heavy))
-    }
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.removeTemporaryFiles()
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let icon = Self.mark(size: 15)
-        icon?.isTemplate = true
-        status.button?.image = icon
+        status.button?.image = LensMark.image(size: LensMark.menuBarSize)
+        status.button?.imageScaling = .scaleNone
         menu = NSMenu()
         menu.addItem(item("Search screen…", #selector(searchScreen)))
         menu.addItem(item("Select text on screen…", #selector(selectText)))
@@ -799,50 +792,58 @@ final class AppController: NSObject, NSApplicationDelegate {
     // MARK: Windows
 
     @objc private func showLauncher() {
-        if launcherWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 318),
-                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "macOS Lens"
-            window.isReleasedWhenClosed = false
-            let root = window.contentView!
-            let icon = NSImageView(image: Self.mark(size: 30) ?? NSImage())
-            icon.contentTintColor = googleBlue
-            icon.frame = NSRect(x: 22, y: 262, width: 40, height: 40)
-            root.addSubview(icon)
-            let heading = NSTextField(labelWithString: "macOS Lens is running")
-            heading.font = .boldSystemFont(ofSize: 16)
-            heading.frame = NSRect(x: 70, y: 274, width: 386, height: 24)
-            root.addSubview(heading)
-            let shortcutField = NSTextField(wrappingLabelWithString: "")
-            shortcutField.frame = NSRect(x: 24, y: 220, width: 432, height: 36)
-            launcherShortcutField = shortcutField
-            root.addSubview(shortcutField)
-            let hint = NSTextField(wrappingLabelWithString:
-                "Can't see the Lens icon in the menu bar? It may be hidden behind the camera notch " +
-                "or turned off in System Settings → Menu Bar. Open macOS Lens again from Finder or " +
-                "Spotlight to show this window.")
-            hint.textColor = .secondaryLabelColor
-            hint.frame = NSRect(x: 24, y: 152, width: 432, height: 60)
-            root.addSubview(hint)
-            func button(_ title: String, _ action: Selector, x: CGFloat, y: CGFloat) -> NSButton {
-                let button = NSButton(title: title, target: self, action: action)
-                button.frame = NSRect(x: x, y: y, width: 210, height: 32)
-                root.addSubview(button)
-                return button
-            }
-            button("Search screen…", #selector(searchScreen), x: 24, y: 108).keyEquivalent = "\r"
-            _ = button("Select text on screen…", #selector(selectText), x: 246, y: 108)
-            _ = button("Fix Screen Recording permission…", #selector(fixScreenRecording), x: 24, y: 70)
-            _ = button("Settings & privacy…", #selector(showSettings), x: 246, y: 70)
-            let coffee = CoffeeButton(target: self, action: #selector(openSupportPage))
-            coffee.frame = NSRect(x: 24, y: 22, width: 210, height: 34)
-            root.addSubview(coffee)
-            _ = button("Quit macOS Lens", #selector(quit), x: 246, y: 24)
-            launcherWindow = window
-            window.center()
+        present(makeLauncherWindow())
+    }
+
+    /// Builds the launcher once. The native checks render it offscreen without showing it.
+    func makeLauncherWindow() -> NSWindow {
+        if let launcherWindow {
+            launcherShortcutField?.stringValue = launcherShortcutText
+            return launcherWindow
         }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 318),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "macOS Lens"
+        window.isReleasedWhenClosed = false
+        let root = window.contentView!
+        let icon = NSImageView(image: LensMark.image(size: 36))
+        icon.imageScaling = .scaleNone
+        icon.contentTintColor = googleBlue
+        icon.frame = NSRect(x: 22, y: 262, width: 40, height: 40)
+        root.addSubview(icon)
+        let heading = NSTextField(labelWithString: "macOS Lens is running")
+        heading.font = .boldSystemFont(ofSize: 16)
+        heading.frame = NSRect(x: 70, y: 274, width: 386, height: 24)
+        root.addSubview(heading)
+        let shortcutField = NSTextField(wrappingLabelWithString: "")
+        shortcutField.frame = NSRect(x: 24, y: 220, width: 432, height: 36)
+        launcherShortcutField = shortcutField
+        root.addSubview(shortcutField)
+        let hint = NSTextField(wrappingLabelWithString:
+            "Can't see the Lens icon in the menu bar? It may be hidden behind the camera notch " +
+            "or turned off in System Settings → Menu Bar. Open macOS Lens again from Finder or " +
+            "Spotlight to show this window.")
+        hint.textColor = .secondaryLabelColor
+        hint.frame = NSRect(x: 24, y: 152, width: 432, height: 60)
+        root.addSubview(hint)
+        func button(_ title: String, _ action: Selector, x: CGFloat, y: CGFloat) -> NSButton {
+            let button = NSButton(title: title, target: self, action: action)
+            button.frame = NSRect(x: x, y: y, width: 210, height: 32)
+            root.addSubview(button)
+            return button
+        }
+        button("Search screen…", #selector(searchScreen), x: 24, y: 108).keyEquivalent = "\r"
+        _ = button("Select text on screen…", #selector(selectText), x: 246, y: 108)
+        _ = button("Fix Screen Recording permission…", #selector(fixScreenRecording), x: 24, y: 70)
+        _ = button("Settings & privacy…", #selector(showSettings), x: 246, y: 70)
+        let coffee = CoffeeButton(target: self, action: #selector(openSupportPage))
+        coffee.frame = NSRect(x: 24, y: 22, width: 210, height: 34)
+        root.addSubview(coffee)
+        _ = button("Quit macOS Lens", #selector(quit), x: 246, y: 24)
+        launcherWindow = window
+        window.center()
         launcherShortcutField?.stringValue = launcherShortcutText
-        present(launcherWindow)
+        return window
     }
 
     // An accessory app opened in the background is not activated on macOS 14+, so its windows would stay behind others.
@@ -855,10 +856,12 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showSettings() {
-        if let settingsWindow {
-            present(settingsWindow)
-            return
-        }
+        present(makeSettingsWindow())
+    }
+
+    /// Builds Settings once. The native checks render it offscreen without showing it.
+    func makeSettingsWindow() -> NSWindow {
+        if let settingsWindow { return settingsWindow }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 620),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "macOS Lens — Settings & privacy"
@@ -871,7 +874,12 @@ final class AppController: NSObject, NSApplicationDelegate {
             if bold { field.font = .boldSystemFont(ofSize: 18) }
             root.addSubview(field)
         }
-        label("Circle to Search, adapted for your Mac", y: 572, bold: true)
+        let mark = NSImageView(image: LensMark.image(size: 30))
+        mark.imageScaling = .scaleNone
+        mark.contentTintColor = googleBlue
+        mark.frame = NSRect(x: 22, y: 569, width: 32, height: 32)
+        root.addSubview(mark)
+        label("Circle to Search, adapted for your Mac", x: 62, y: 572, width: 512, bold: true)
         label("Press the shortcut or use the menu-bar Lens icon. The screen freezes in place and starts fully " +
               "selected. Circle, highlight, scribble or tap something to search it, drag the corners or edges to " +
               "adjust, and drag inside to move. Switch to Text at the bottom (or use the text shortcut) to select " +
@@ -938,7 +946,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         root.addSubview(text)
         settingsWindow = window
         window.center()
-        present(window)
+        return window
     }
 
     @objc private func toggleUpload(_ sender: NSButton) {
