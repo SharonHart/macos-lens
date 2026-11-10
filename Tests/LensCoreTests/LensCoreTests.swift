@@ -1417,15 +1417,17 @@ extension LensCoreTests {
         XCTAssertEqual(layout.lines.count, 4, layout.allText)
         XCTAssertEqual(screen.plain.lines, [true, true, true, true], "16 pt body text is plain")
         let all = try XCTUnwrap(layout.all)
-        let height = layout.lines[1].box.height
+        // Loose circles reach a share of the line spacing past the line. Vision's line boxes are taller on some macOS
+        // versions (as tall as the spacing on macOS 26), so padding by the box height would reach the next line's centre.
+        let slack = (layout.lines[0].box.midY - layout.lines[1].box.midY) * 0.35
         XCTAssertEqual(screen.region(unit: around(layout, all.lower...all.upper, dx: 0.04, dy: 0.05)), .text(all),
                        "paragraph")
         let second = layout.lines[1].words
         XCTAssertEqual(screen.region(unit: around(layout, second.lowerBound...(second.upperBound - 1), dx: 0.03,
-                                                  dy: height * 0.6)),
+                                                  dy: slack)),
                        .text(TextRange(anchor: second.lowerBound, focus: second.upperBound - 1)), "single line")
         let sentence = (second.lowerBound + 1)...(second.lowerBound + 3)
-        XCTAssertEqual(screen.region(unit: around(layout, sentence, dx: 0.004, dy: height * 0.6)),
+        XCTAssertEqual(screen.region(unit: around(layout, sentence, dx: 0.004, dy: slack)),
                        .text(TextRange(anchor: sentence.lowerBound, focus: sentence.upperBound)), "a few words")
     }
 
