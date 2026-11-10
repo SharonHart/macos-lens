@@ -14,6 +14,9 @@
 # time). The background is drawn by scripts/dmg/DMGArt.swift, compiled together with the app's LensMark.swift, and
 # the volume icon is the app's own AppIcon.icns. Set MACOS_LENS_DMG_QA=<dir> to also write light and dark previews
 # of the window there.
+#
+# With MACOS_LENS_SIGN_IDENTITY set to a Developer ID Application identity, the disk image is signed too, and with
+# notarization credentials as well (see scripts/notarize.sh) it's notarized and stapled before it's checked and copied.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -86,6 +89,16 @@ rm -f "$DMG"
     -D app="$APP" -D art="$ART" -D volume_icon="$VOLUME_ICON" "$VOLUME" "$DMG" >"$WORK/dmgbuild.log" 2>&1 ||
     { tail -n 30 "$WORK/dmgbuild.log" >&2; die "dmgbuild failed."; }
 hdiutil verify -quiet "$DMG"
+
+IDENTITY="${MACOS_LENS_SIGN_IDENTITY:--}"
+if [[ "$IDENTITY" != - ]]; then
+    step "Signing $NAME.dmg as $IDENTITY"
+    codesign --force --sign "$IDENTITY" --timestamp "$DMG"
+    codesign --verify --strict "$DMG"
+    if [[ -n "${MACOS_LENS_NOTARY_PROFILE:-}${MACOS_LENS_NOTARY_KEY:-}" ]]; then
+        bash scripts/notarize.sh "$DMG"
+    fi
+fi
 
 step "Checking the disk image"
 # Mounted read-only where Finder would mount it, so the background alias is resolved exactly as on a user's Mac.
