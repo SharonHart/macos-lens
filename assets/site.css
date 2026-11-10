@@ -474,13 +474,8 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 .sys__app .sys__n { margin-left: auto; }
 .sys__toggle { position: relative; width: 38px; height: 22px; border-radius: 99px; background: #0a84ff; }
 .sys__toggle::after { content: ""; position: absolute; right: 2px; top: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.4); }
-.sys__label { margin-top: 6px; font-size: 13px; font-weight: 700; color: #a1a1a6; }
-.sys__blocked { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 14px; }
-.sys__blocked p { flex: 1 1 100%; color: #d8d8da; }
-.sys__blocked .sys__n { margin-left: auto; }
-.sys__btn { padding: 4px 12px; border-radius: 7px; font-size: 13px; line-height: 17px; background: #5a5a5e; color: #fff; font-weight: 600; box-shadow: 0 0 0 3px color-mix(in oklab, #0a84ff 55%, transparent); }
 
-/* a phone shows the main pane only: the switch and the button */
+/* a phone shows the main pane only: the switch */
 @media (max-width: 639px) {
   .inst__shot { margin-top: var(--s-6); }
   .sys.ui { grid-template-columns: minmax(0, 1fr); font-size: 13px; }
@@ -490,11 +485,7 @@ code, .mono { font-family: var(--font-mono); font-size: .9em; }
 }
 
 /* ------------------------------------------------------------------ faq + close */
-.faq a, .priv__note a, .inst__card a:not(.btn), .first-run a { color: var(--sky); }
-/* step 1's Settings link sits in a span, outside the running-text link rule (p a); same look */
-.first-run a { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px;
-  text-decoration-color: color-mix(in oklab, currentColor 45%, transparent); transition: text-decoration-color .2s; }
-.first-run a:hover { text-decoration-color: currentColor; }
+.faq a, .priv__note a, .inst__card a:not(.btn) { color: var(--sky); }
 /* the system sizes the word for a short name; ours is ten characters plus the mark (about 6.2em), so it is capped to the wrap */
 .close__word { display: flex; align-items: center; gap: .18em; line-height: 1.02; font-size: min(clamp(56px, 14.5vw, 216px), calc(min(100vw - 2 * var(--gut), var(--container)) / 6.4)); }
 .close__word img { width: .78em; height: .78em; flex: none; }
@@ -570,35 +561,4 @@ html[data-buttons="pill"] .btn--secondary:hover { background: color-mix(in oklab
   main > :is(.hero, .section--hero) { height: auto; min-height: 100vh; min-height: 100svh; }
   main > :is(.hero, .section--hero):has(> :is(.wrap, .container)) { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 1fr; }
   main > :is(.hero, .section--hero) > :is(.wrap, .container) { height: auto; }
-}
-
-/* ------------------------------------------------------------------ gatekeeper tip
-   shown when a DMG link is clicked: how to get past macOS's "Not Opened" dialog. It never blocks the
-   download; it sits in a corner until closed. The chip mimics the dialog's only button, Done (macOS 26). */
-.gk { position: fixed; z-index: 60; right: var(--gut); bottom: 24px; width: min(388px, calc(100vw - 2 * var(--gut)));
-  padding: var(--s-5) var(--s-5) var(--s-4); border-radius: var(--r-lg); background: var(--p-surface); color: var(--p-ink);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--p-ink) 14%, transparent), 0 24px 60px -18px rgba(0,0,0,.7);
-  font: 400 var(--t-small)/1.5 var(--font-text); }
-.gk__h { margin: 0 32px var(--s-3) 0; font: 600 var(--t-body)/1.35 var(--font-text); text-wrap: balance; }
-.gk__x { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 36px; height: 36px; padding: 0;
-  border: 0; border-radius: 50%; background: transparent; color: var(--p-muted); cursor: pointer; }
-.gk__x svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-.gk__x:hover { color: var(--p-ink); background: color-mix(in oklab, var(--p-ink) 8%, transparent); }
-.gk__steps { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--s-2); }
-.gk__steps li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; align-items: start; }
-.gk__steps i { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--p-action);
-  color: var(--p-action-ink); font: 700 12px/1 var(--font-text); font-style: normal; }
-.gk__steps span { padding-top: 1px; text-wrap: pretty; color: color-mix(in oklab, var(--p-ink) 84%, var(--p-bg)); }
-.gk__steps b { color: var(--p-ink); font-weight: 600; }
-.gk__b { display: inline-block; padding: 0 12px; border-radius: 99em; background: #0071e3; color: #fff !important; font-weight: 600;
-  line-height: 1.6; white-space: nowrap; margin: 0 2px; }
-.gk__open { margin-top: var(--s-4); }
-.gk__alt { margin: var(--s-3) 0 0; color: var(--p-muted); }
-.gk__alt a { color: var(--p-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in oklab, var(--p-ink) 40%, transparent); }
-.gk__alt a:hover { text-decoration-color: var(--sky); }
-.gk :focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
-@media (max-width: 639px) {
-  .gk { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); width: auto; padding: var(--s-4) var(--s-4) var(--s-3); }
-  .gk__x { width: 44px; height: 44px; top: 4px; right: 4px; }
-  .gk__open { width: 100%; }
 }

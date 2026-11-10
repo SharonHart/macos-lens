@@ -386,7 +386,7 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
       <div class="faq span-6">
         <div class="faq__item"><h3>Is this made by Google?</h3><p>No. macOS Lens is independent and not affiliated with Google or Apple. Visual search uses an unofficial Google Lens endpoint that can change at any time.</p></div>
         <div class="faq__item"><h3>What leaves my Mac?</h3><p>The area you search, words you type or pick to search, and text you agree to send to Google Translate. Capture, text recognition, Listen and Apple translation stay on the Mac. The app also asks GitHub for the latest release shortly after launch and once a day. That request is anonymous and carries nothing from your screen, and you can turn it off in Settings. <a href="#privacy">Privacy in detail</a></p></div>
-        <div class="faq__item"><h3>macOS says “macOS Lens” Not Opened. What now?</h3><p>Click Done. Then open System Settings › Privacy &amp; Security, scroll to Security and click Open Anyway next to the macOS Lens message; it shows there for about an hour after the blocked open. Click Open Anyway again and confirm with your password or Touch ID. Releases are ad-hoc signed, not notarized by Apple, so copies from the DMG or Homebrew get this dialog. The Terminal installer’s download isn’t marked as coming from the internet, so it doesn’t. macOS 14 words the dialog differently; close it, then follow the same steps. macOS also asks for Screen Recording again after each update.</p></div>
+        <div class="faq__item"><h3>Is it signed and notarized?</h3><p>Yes. From 0.2.2, releases are signed with a Developer ID and notarized by Apple, so macOS asks once whether to open an app downloaded from the internet: click Open. Updates keep the Screen Recording permission; updating from 0.2.1 or earlier asks for it once more. Older versions weren’t notarized, so install the latest release.</p></div>
       </div>
       <div class="faq span-6">
         <div class="faq__item"><h3>Which Macs does it run on?</h3><p>macOS 14 Sonoma or later, on Apple silicon or Intel.</p></div>
@@ -407,27 +407,26 @@ FORM: one dark page; one live demo per idea; Urbanist and DM Mono; facts, not ad
         </div>
         <div class="inst__panel" role="tabpanel" id="p-curl" aria-labelledby="tab-curl">
           <div class="cmd"><pre><span class="p">$ </span><code>curl -fsSL https://raw.githubusercontent.com/SharonHart/macos-lens/main/scripts/install.sh | bash</code></pre><button class="copy" type="button" data-copy aria-label="Copy the command"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button></div>
-          <p>Downloads the latest release, checks its checksum and code signature, installs it and opens it. A download made in Terminal isn’t marked as coming from the internet, so there is no “Not Opened” dialog. Run it again to update.</p>
+          <p>Downloads the latest release, checks its checksum and code signature, installs it and opens it. Run it again to update.</p>
         </div>
         <div class="inst__panel" role="tabpanel" id="p-brew" aria-labelledby="tab-brew" hidden>
           <div class="cmd"><pre><span class="p">$ </span><code>brew tap SharonHart/macos-lens https://github.com/SharonHart/macos-lens
 brew trust --tap sharonhart/macos-lens
 brew install --cask macos-lens</code></pre><button class="copy" type="button" data-copy aria-label="Copy the command"><svg class="i-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6.5A2.5 2.5 0 0 0 13.5 4h-7A2.5 2.5 0 0 0 4 6.5v7A2.5 2.5 0 0 0 6.5 16H8"/></svg><svg class="i-done" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button></div>
-          <p>Homebrew 7 and later load a third-party tap only after you trust it. Update with <code>brew upgrade</code>.</p>
+          <p>Homebrew 7 and later load a third-party tap only after you trust it. The first launch asks whether to open an app downloaded from the internet: click Open. Update with <code>brew upgrade</code>.</p>
         </div>
         <div class="inst__panel" role="tabpanel" id="p-dmg" aria-labelledby="tab-dmg" hidden>
-          <p>Open the DMG, drag macOS Lens onto Applications, and open it from Applications. At first open, macOS says “macOS Lens” Not Opened: click Done, then see step 1. To build it yourself, run <code>./scripts/install.sh --from-source</code> in a clone.</p>
+          <p>Open the DMG, drag macOS Lens onto Applications, and open it from Applications. macOS asks once whether to open an app downloaded from the internet: click Open. To build it yourself, run <code>./scripts/install.sh --from-source</code> in a clone.</p>
           <div class="btn-row"><a class="btn btn--primary" href="https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg">Download the DMG</a><a class="btn btn--secondary" href="https://github.com/SharonHart/macos-lens/releases">All releases</a></div>
         </div>
         <h3 class="first__h">First launch on macOS</h3>
         <ol class="first-run">
-          <li><b><i>1</i>DMG or Homebrew: Done, then Open Anyway</b><span>If macOS says “macOS Lens” Not Opened, click Done. In <a href="x-apple.systempreferences:com.apple.preference.security?Security">Privacy &amp; Security</a>, click Open Anyway under Security (it shows for about an hour), then Open Anyway again with your password or Touch ID.</span></li>
-          <li><b><i>2</i>Screen Recording</b><span>Turn macOS Lens on in Screen &amp; System Audio Recording, then Quit &amp; Reopen.</span></li>
-          <li><b><i>3</i>After each update</b><span>Turn Screen Recording on again; macOS sees each build as a new app.</span></li>
+          <li><b><i>1</i>Click Open</b><span>The first launch from the DMG or Homebrew asks whether to open an app downloaded from the internet.</span></li>
+          <li><b><i>2</i>Screen Recording</b><span>Turn macOS Lens on in Screen &amp; System Audio Recording, then Quit &amp; Reopen. Updates keep it; updating from 0.2.1 or earlier asks once more.</span></li>
         </ol>
       </div>
       <div class="span-6 start-7 inst__shot">
-        <div class="sys ui ui-settings" role="img" aria-label="System Settings at Privacy and Security: macOS Lens switched on under Screen and System Audio Recording, and an Open Anyway button for macOS Lens under Security.">
+        <div class="sys ui ui-settings" role="img" aria-label="System Settings at Privacy and Security: macOS Lens switched on under Screen and System Audio Recording.">
           <div class="sys__side">
             <div class="sys__lights"><i></i><i></i><i></i></div>
             <span class="sys__search">Search</span>
@@ -445,11 +444,6 @@ brew install --cask macos-lens</code></pre><button class="copy" type="button" da
               <div class="sys__row"><b style="--c:#0a84ff"></b>Accessibility</div>
               <div class="sys__row"><b style="--c:#ff375f"></b>Screen &amp; System Audio Recording</div>
               <div class="sys__app"><img src="assets/brand/app-icon-512.png" alt="">macOS Lens<span class="sys__n">2</span><i class="sys__toggle"></i></div>
-            </div>
-            <p class="sys__label">Security</p>
-            <div class="sys__group sys__blocked">
-              <p>“macOS Lens” was blocked to protect your Mac.</p>
-              <span class="sys__n">1</span><span class="sys__btn">Open Anyway</span>
             </div>
           </div>
         </div>
@@ -488,19 +482,6 @@ brew install --cask macos-lens</code></pre><button class="copy" type="button" da
     </div>
   </div>
 </footer>
-
-<aside class="gk" id="gk" aria-labelledby="gk-h" hidden>
-  <button class="gk__x" type="button" aria-label="Close this tip"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9"/></svg></button>
-  <p class="gk__h" id="gk-h">When macOS says “macOS Lens” Not Opened</p>
-  <ol class="gk__steps">
-    <li><i>1</i><span>Click <b class="gk__b">Done</b>.</span></li>
-    <li><i>2</i><span>In System Settings › Privacy &amp; Security, scroll to Security and click <b>Open Anyway</b> next to the macOS Lens message. It stays there for about an hour.</span></li>
-    <li><i>3</i><span>Click <b>Open Anyway</b> again and confirm with your password or Touch ID.</span></li>
-  </ol>
-  <a class="btn btn--secondary btn--sm gk__open" href="x-apple.systempreferences:com.apple.preference.security?Security" data-mac-only>Open Privacy &amp; Security</a>
-  <p class="gk__alt">The <a href="#install" data-gk-terminal>Terminal installer</a> skips this step.</p>
-</aside>
-<p class="sr-only" id="gk-live" aria-live="polite"></p>
 
 <script type="module" src="assets/system.js"></script>
 <script type="module" src="assets/motion/motion.js"></script>
