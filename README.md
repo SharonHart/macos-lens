@@ -20,16 +20,13 @@ again to update. Options such as `--no-launch` or `--dir <path>` go after `bash 
 
 Download [macOS-Lens.dmg](https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg)
 from the [latest release](https://github.com/SharonHart/macos-lens/releases/latest), open it, and drag
-**macOS Lens** onto **Applications**, then open it from Applications. Releases aren't notarized, so the
-first launch shows **“macOS Lens” Not Opened** (“Apple could not verify…”):
+**macOS Lens** onto **Applications**, then open it from Applications. Releases are signed with a
+Developer ID and notarized by Apple, so the first launch only asks whether to open an app downloaded
+from the internet: click **Open**.
 
-1. Click **Done**.
-2. Open System Settings › Privacy & Security, scroll to **Security** and click **Open Anyway** next to
-   the macOS Lens message. The button stays for about an hour after the blocked launch; if it's gone,
-   open the app again.
-3. Click **Open Anyway** again and confirm with your password or Touch ID.
-
-This is needed once per downloaded version.
+Versions before 0.2.2 weren't notarized. If one of them shows **“macOS Lens” Not Opened**, click
+**Done**, open System Settings › Privacy & Security, scroll to **Security** and click **Open Anyway**
+next to the macOS Lens message, then confirm with your password or Touch ID.
 
 ## Homebrew
 
@@ -39,8 +36,7 @@ brew trust --tap sharonhart/macos-lens   # Homebrew 7 and newer only load taps y
 brew install --cask macos-lens
 ```
 
-Homebrew quarantines its downloads, so the first launch shows the same dialog: click **Done**, then
-**Open Anyway** as described above.
+Homebrew quarantines its downloads, so the first launch asks the same question: click **Open**.
 
 ## First launch and Screen Recording
 
@@ -67,10 +63,8 @@ question. For Homebrew installs, run `brew uninstall --cask --zap macos-lens`.
 
 ## Signing
 
-Releases are ad-hoc signed, and each build counts as a new app for Screen Recording, so after updating
-the app shows its Screen Recording window again and you allow it once more. Signing with a Developer ID certificate
-and notarizing would remove the Gatekeeper warning and keep the Screen Recording permission across
-updates.
+From 0.2.2, releases are signed with a Developer ID and notarized, so updates keep the Screen Recording
+permission. Updating from an older, ad-hoc signed version asks for Screen Recording once more.
 
 Development and release notes are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
