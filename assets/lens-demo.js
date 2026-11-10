@@ -829,30 +829,47 @@ $$('.keybtn[data-lens-key]').forEach(b => b.addEventListener('click', () => shor
 $$('[role="tab"]').forEach(t => t.addEventListener('click', () => lenses.forEach(l => l.stopSpeech())));
 document.addEventListener('visibilitychange', () => { if (document.hidden) lenses.forEach(l => l.stopSpeech()); });
 
-/* the reel plays while it is on screen, unless paused or motion is reduced */
+/* the reel plays while it is on screen, unless paused or motion is reduced; it starts muted */
 const video = $('video[data-reel]');
 if (video) {
   const btn = $('.reel__pause');
+  const snd = $('.reel__sound');
   const hasSrc = !!video.querySelector('source') || !!video.getAttribute('src');
   let paused = false;
+  const play = () => video.play().catch(err => {
+    if (err && err.name === 'NotAllowedError' && !video.muted) { video.muted = true; video.play().catch(() => {}); }
+  });
   if (btn) {
     btn.hidden = !hasSrc;
     btn.addEventListener('click', () => {
       paused = !paused;
       btn.setAttribute('aria-pressed', String(paused));
       btn.setAttribute('aria-label', paused ? 'Play the video' : 'Pause the video');
-      if (paused) video.pause(); else video.play().catch(() => {});
+      if (paused) video.pause(); else play();
     });
+  }
+  if (snd) {
+    snd.hidden = !hasSrc;
+    const sync = () => snd.setAttribute('aria-pressed', String(!video.muted));
+    snd.addEventListener('click', () => {
+      video.muted = !video.muted;
+      if (!video.muted && !paused && video.paused) play();
+    });
+    video.addEventListener('volumechange', sync);
+    sync();
   }
   if (hasSrc && !RM.matches) {
     new IntersectionObserver(([en]) => {
-      if (en.intersectionRatio >= .65 && !paused) video.play().catch(() => {});
+      if (en.intersectionRatio >= .65 && !paused) play();
       else if (en.intersectionRatio < .65) video.pause();
     }, { threshold: [0, .65, 1] }).observe(video);
   } else if (hasSrc) {
     video.controls = true;
     if (btn) btn.hidden = true;
+    if (snd) snd.hidden = true;
   }
+  const ctl = $('.reel__controls');
+  if (ctl) ctl.hidden = [btn, snd].every(b => !b || b.hidden);
   /* chapters jump the reel; the current one follows playback */
   const chapters = $('.chapters');
   if (chapters && hasSrc) {
@@ -861,7 +878,7 @@ if (video) {
     marks.forEach(m => m.addEventListener('click', () => {
       video.currentTime = Number(m.dataset.t);
       if (!RM.matches) { paused = false; if (btn) { btn.setAttribute('aria-pressed', 'false'); btn.setAttribute('aria-label', 'Pause the video'); } }
-      video.play().catch(() => {});
+      play();
     }));
     video.addEventListener('timeupdate', () => {
       let cur = null;
