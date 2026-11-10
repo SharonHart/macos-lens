@@ -938,7 +938,7 @@ if (caps && !RM.matches) {
 }
 
 /* a DMG download: the download goes ahead as normal, and a tip in the corner says how to get past
-   macOS's "Not Opened" dialog (Done, then Open Anyway). It never takes focus, and stays until closed. */
+   macOS's "Not Opened" dialog (Done, then Open Anyway twice in Settings). It never takes focus, and stays until closed. */
 const gk = $('#gk');
 if (gk) {
   const live = $('#gk-live');
@@ -962,7 +962,7 @@ if (gk) {
     gk.hidden = false;
     if (!RM.matches) gk.animate([{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.2,.8,.2,1)' });
     else gk.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160 });
-    live.textContent = 'If macOS says macOS Lens Not Opened, click Done, not Move to Trash. Then click Open Anyway in System Settings, Privacy and Security.';
+    live.textContent = 'If macOS says macOS Lens Not Opened, click Done. Then in System Settings, Privacy and Security, click Open Anyway under Security, click Open Anyway again, and confirm with your password or Touch ID.';
   };
   document.addEventListener('click', e => {
     const a = e.target.closest?.('a[href$="/macOS-Lens.dmg"]');
