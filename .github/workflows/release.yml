@@ -187,6 +187,31 @@ jobs:
           gh release create "v$VERSION" "macOS-Lens-$VERSION.zip" "macOS-Lens-$VERSION.dmg" macOS-Lens.dmg SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "macOS Lens $VERSION" --notes-file release-notes.md
 
+      # Download what was published, as people and the in-app updater get it, and check it byte for byte.
+      - name: Check the published release
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          expected="$(printf '%s\n' "macOS-Lens-$VERSION.zip" "macOS-Lens-$VERSION.dmg" macOS-Lens.dmg SHA256SUMS | sort)"
+          release="$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)" ||
+            fail "v$VERSION wasn't published."
+          [[ "$(jq -r '.isDraft or .isPrerelease' <<<"$release")" == false ]] || fail "v$VERSION is a draft or a prerelease."
+          [[ "$(jq -r '.assets[].name' <<<"$release" | sort)" == "$expected" ]] ||
+            fail "v$VERSION has $(jq -r '[.assets[].name] | join(", ")' <<<"$release"), not the four files the updater needs."
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --dir published
+          cmp published/SHA256SUMS dist/SHA256SUMS || fail "The published SHA256SUMS differs from the one this run built."
+          (cd published && sha256sum --check SHA256SUMS)
+          for attempt in 1 2 3 4 5 6; do
+            latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)"
+            if [[ "$latest" == "v$VERSION" ]] &&
+              curl -fsSL -o latest.dmg "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/macOS-Lens.dmg" &&
+              cmp -s latest.dmg "published/macOS-Lens-$VERSION.dmg"; then
+              break
+            fi
+            (( attempt < 6 )) || fail "releases/latest/download/macOS-Lens.dmg doesn't serve v$VERSION's disk image (latest is $latest)."
+            sleep 10
+          done
+          echo "v$VERSION has all four files, their checksums match, and the latest disk image link serves it." >> "$GITHUB_STEP_SUMMARY"
+
       # This repository is its own Homebrew tap, so the cask on main must match the published zip.
       - name: Point the Homebrew cask at the new zip
         run: |
@@ -203,4 +228,9 @@ jobs:
           gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$cask" -f branch=main \
             -f message="Update the cask to $VERSION" -f sha="$(jq -r .sha current.json)" \
             -f content="$(base64 -w0 cask.rb)" > /dev/null
+          for attempt in 1 2 3; do
+            gh api "repos/$GITHUB_REPOSITORY/contents/$cask?ref=main" --jq .content | base64 --decode | cmp -s - cask.rb && break
+            (( attempt < 3 )) || fail "$cask on main doesn't match the update."
+            sleep 5
+          done
           echo "Casks/macos-lens.rb on main now installs $VERSION ($zip_sha)." >> "$GITHUB_STEP_SUMMARY"
