@@ -40,6 +40,9 @@ privacy settings: after launching a new build, click **Allow Screen Recording…
 
 ## Releasing
 
+Signed releases come from the **Release** workflow (see [Signed releases](#signed-releases)). To
+build a release on your own Mac instead:
+
 ```sh
 ./scripts/release.sh 0.2.1
 ```
@@ -49,8 +52,8 @@ tests and native checks, then `scripts/package.sh`, which builds a universal (ar
 writes `dist/macOS-Lens-<version>.zip`, `dist/macOS-Lens-<version>.dmg`, a version-less copy
 `dist/macOS-Lens.dmg` (so `releases/latest/download/macOS-Lens.dmg` always resolves) and
 `dist/SHA256SUMS`, and
-updates the version and checksum in `Casks/macos-lens.rb`. It prints the `gh release create` command
-to run; commit the updated cask first.
+updates the version and checksum in `Casks/macos-lens.rb`. It writes the release notes to
+`dist/release-notes.md` and prints the `gh release create` command to run; commit the updated cask first.
 
 The disk images come from `scripts/make-dmg.sh`, which `package.sh` calls. Run it on its own to
 rebuild the disk images and `SHA256SUMS` from the existing zip, without a new zip or cask change. It
@@ -74,3 +77,76 @@ never uses Finder or AppleScript, so it runs headless:
 The in-app updater reads the latest published release and needs its assets named exactly
 `macOS-Lens-X.Y.Z.zip` and `SHA256SUMS`, with a tag of `vX.Y.Z` matching the app's version. Keep those
 names, or installed copies can no longer update themselves.
+
+## Signed releases
+
+`.github/workflows/release.yml` signs the app and the disk image with a Developer ID certificate and
+has Apple notarize both, so they open without the Gatekeeper warning and keep their Screen Recording
+permission across updates. It runs `scripts/release.sh` on a `macos-26` runner, then publishes the
+release and points `Casks/macos-lens.rb` on `main` at the new zip.
+
+### Set up once
+
+You need a paid Apple Developer Program membership.
+
+1. In [Certificates, IDs & Profiles](https://developer.apple.com/account/resources/certificates/list),
+   create a **Developer ID Application** certificate. In Keychain Access, export it with its private
+   key as a `.p12` file with a password.
+2. In [App Store Connect › Users and Access › Integrations](https://appstoreconnect.apple.com/access/integrations/api),
+   create a **Team** API key with the **Developer** role. Download the `.p8` file (you can only do this
+   once), and note the key ID and the issuer ID.
+3. Store them in the repository's `release` environment. Secrets go into GitHub, never into the
+   repository:
+
+   ```sh
+   base64 -i DeveloperID.p12 | gh secret set DEVELOPER_ID_P12_BASE64 --env release
+   gh secret set DEVELOPER_ID_P12_PASSWORD --env release
+   base64 -i AuthKey_ABCDE12345.p8 | gh secret set NOTARY_KEY_P8_BASE64 --env release
+   gh variable set DEVELOPER_ID_IDENTITY --env release --body "Developer ID Application: Your Name (TEAMID1234)"
+   gh variable set NOTARY_KEY_ID --env release --body ABCDE12345
+   gh variable set NOTARY_ISSUER_ID --env release --body 00000000-0000-0000-0000-000000000000
+   ```
+
+   `security find-identity -v -p codesigning` shows the exact `DEVELOPER_ID_IDENTITY`. In Settings ›
+   Environments › release, you can limit the environment to `main` and add yourself as a required
+   reviewer, so every release waits for your approval.
+
+### Release a version
+
+1. Bump `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist` and merge it
+   to `main`.
+2. Do a dry run. It builds, signs and notarizes, and keeps the files on the run without publishing:
+
+   ```sh
+   gh workflow run release.yml -f version=0.2.2
+   ```
+
+3. When the dry run passes, publish:
+
+   ```sh
+   gh workflow run release.yml -f version=0.2.2 -f publish=true
+   ```
+
+   This tags `v0.2.2` at the run's commit, uploads the zip, both disk images and `SHA256SUMS`, and
+   commits the new version and checksum to `Casks/macos-lens.rb`. A version that is already tagged
+   is never replaced; release a new one.
+
+The first signed release changes the app's signature, so people allow Screen Recording once more
+after updating to it. After that the permission stays across updates.
+
+To sign and notarize on your own Mac, save the API key in your keychain once:
+
+```sh
+xcrun notarytool store-credentials macos-lens --key AuthKey_ABCDE12345.p8 --key-id ABCDE12345 \
+    --issuer 00000000-0000-0000-0000-000000000000
+```
+
+Then:
+
+```sh
+MACOS_LENS_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID1234)" \
+MACOS_LENS_NOTARY_PROFILE=macos-lens ./scripts/release.sh 0.2.2
+```
+
+`scripts/notarize.sh` prints Apple's submission ID before it waits. If Apple takes longer than 30
+minutes, check that submission with `xcrun notarytool info <id>` instead of submitting again.

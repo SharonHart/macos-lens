@@ -73,6 +73,23 @@ if [[ "$ARCHS" == *x86_64* ]]; then
 else
     PLATFORMS="Apple silicon only (this build has no Intel slice)"
 fi
+# Ask the files, not the environment: only a stapled disk image opens without the Gatekeeper prompt.
+if xcrun stapler validate -q "$DMG" >/dev/null 2>&1; then
+    FIRST_LAUNCH="The app is signed with a Developer ID and notarized by Apple, so it opens without a warning."
+else
+    FIRST_LAUNCH="The app is ad-hoc signed, so the first launch needs System Settings › Privacy & Security › Open Anyway."
+fi
+NOTES="dist/release-notes.md"
+cat >"$NOTES" <<EOF
+$PLATFORMS, running macOS 14 or newer. No Xcode needed.
+
+Install or update:
+curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash
+
+Or open macOS-Lens-$VERSION.dmg and drag macOS Lens to Applications. $FIRST_LAUNCH
+
+Checksums are in SHA256SUMS.
+EOF
 
 step "Ready to publish macOS Lens $VERSION ($ARCHS)"
 cat <<EOF
@@ -83,12 +100,5 @@ https://github.com/$REPO/releases/latest/download/macOS-Lens.dmg pointing at the
 
 Then run:
 
-gh release create v$VERSION $ZIP $DMG $LATEST_DMG dist/SHA256SUMS --repo $REPO --title 'macOS Lens $VERSION' --notes '$PLATFORMS, running macOS 14 or newer. No Xcode needed.
-
-Install or update:
-curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash
-
-Or open macOS-Lens-$VERSION.dmg and drag macOS Lens to Applications. The app is ad-hoc signed, so the first launch needs System Settings › Privacy & Security › Open Anyway.
-
-Checksums are in SHA256SUMS.'
+gh release create v$VERSION $ZIP $DMG $LATEST_DMG dist/SHA256SUMS --repo $REPO --title 'macOS Lens $VERSION' --notes-file $NOTES
 EOF

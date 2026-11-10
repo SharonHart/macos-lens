@@ -4,6 +4,8 @@ cd "$(dirname "$0")/.."
 # Optional overrides (used by package.sh and install.sh; defaults keep the plain developer build):
 #   MACOS_LENS_BINARY=<path>       bundle an already-built executable instead of running swift build
 #   MACOS_LENS_APP=<path>          where to assemble the app (default: dist/macOS Lens.app)
+#   MACOS_LENS_SIGN_IDENTITY=<id>  sign with this Developer ID Application identity, with the Hardened Runtime and a
+#                                  secure timestamp, instead of ad-hoc (default: -, ad-hoc)
 BINARY="${MACOS_LENS_BINARY:-}"
 if [[ -z "$BINARY" ]]; then
     swift build -c release
@@ -26,5 +28,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BINARY" "$APP/Contents/MacOS/MacOSLens"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp "$ICON_DIR/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-codesign --force --sign - --identifier dev.macos-lens.client "$APP"
+IDENTITY="${MACOS_LENS_SIGN_IDENTITY:--}"
+if [[ "$IDENTITY" == - ]]; then
+    codesign --force --sign - --identifier dev.macos-lens.client "$APP"
+else
+    # Notarization needs the Hardened Runtime and a secure timestamp. The app needs no entitlements under it.
+    codesign --force --sign "$IDENTITY" --options runtime --timestamp --identifier dev.macos-lens.client "$APP"
+fi
 printf 'Built %s\n' "$APP"
