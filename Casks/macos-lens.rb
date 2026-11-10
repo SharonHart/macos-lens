@@ -1,7 +1,7 @@
 # version and sha256 are rewritten by scripts/package.sh so they always match the packaged zip.
 cask "macos-lens" do
-  version "0.2.1"
-  sha256 "5df03b60e9d93db7b795789a0dbde9f89095fac300c263303d626d27ed297985"
+  version "0.2.2"
+  sha256 "4beaf9445065acb10d481a8e3adb9b15f6c60aab5497ad18464ab913dc5a0be6"
 
   url "https://github.com/SharonHart/macos-lens/releases/download/v#{version}/macOS-Lens-#{version}.zip"
   name "macOS Lens"
