@@ -45,7 +45,10 @@ public enum OCR {
             let boxes = TextSplitter.repairedBoxes(found, lineBox: observation.boundingBox, text: text, ranges: ranges,
                                                    rightToLeft: TextScript.isRightToLeft(text))
             let units = zip(splits, boxes).map { TextUnit(text: String(text[$0.range]), separator: $0.separator, box: $1) }
-            return RecognizedLine(text: text, box: observation.boundingBox, units: units)
+            let width = (observation.topRight.x - observation.topLeft.x) * CGFloat(image.width)
+            let rise = (observation.topRight.y - observation.topLeft.y) * CGFloat(image.height)
+            return RecognizedLine(text: text, box: observation.boundingBox, units: units,
+                                  confidence: candidate.confidence, tilt: atan2(rise, width) * 180 / .pi)
         }
     }
 

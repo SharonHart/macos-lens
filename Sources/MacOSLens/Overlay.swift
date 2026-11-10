@@ -151,6 +151,8 @@ final class OverlayView: NSView {
     static var speaker: Speaker = SystemSpeaker()
     static var recognizer: @Sendable (CGImage) throws -> [RecognizedLine] = { try OCR.recognizeWords($0) }
     private(set) var textLayout: TextLayout?
+    /// Which recognized lines are plain text, so presses and circles on anything else search visually.
+    private(set) var plainText: GestureClassifier.PlainText?
     private(set) var textRange: TextRange?
     private(set) var recognizing = false
     private var recognitionWaiters: [() -> Void] = []
@@ -913,7 +915,7 @@ final class OverlayView: NSView {
         let region = textRange == nil ? target(at: point) : .draw
         if case .resize = region, !isWhole { return .region(region) }
         let press = GestureClassifier.press(at: point, layout: textLayout, canvas: canvas, clickCount: clickCount,
-                                            shift: shift, current: textRange)
+                                            shift: shift, current: textRange, plain: plainText)
         return press == .visual ? .region(region) : .text(press)
     }
 
@@ -1129,9 +1131,10 @@ final class OverlayView: NSView {
         classifyRegion()
     }
 
-    /// Whether a circled, scribbled or dragged area is text or a picture, decided on this Mac from the recognized words,
-    /// the area's ink and Vision's salient objects: text is selected and searched as text, anything else is searched
-    /// visually, offering "Select text" when it contains words. Until the screen's text is read, areas are visual.
+    /// Whether a circled, scribbled or dragged area is plain text or not, decided on this Mac from the recognized
+    /// words and how they are set, the area's ink and Vision's salient objects: plain text is selected, anything else
+    /// is searched visually, offering "Select text" when it contains words. Until the screen's text is read, areas
+    /// are visual.
     private func classifyRegion() {
         guard let unit, !isWhole, let selection, let layout = textLayout, !layout.isEmpty,
               layout.range(inside: selection, canvas: canvas) != nil else {
@@ -1141,6 +1144,7 @@ final class OverlayView: NSView {
         }
         let generation = tapGeneration
         let image = self.image
+        let plain = plainText
         let finish: (GestureClassifier.Region) -> Void = { [weak self] verdict in
             self?.applyRegion(verdict, generation: generation, unit: unit)
         }
@@ -1153,7 +1157,7 @@ final class OverlayView: NSView {
                     SelectionEditor.unit(forNormalized: $0, inPixels: pixels, width: image.width, height: image.height)
                 }
             }
-            let verdict = GestureClassifier.region(unit: unit, layout: layout, ink: ink, objects: objects)
+            let verdict = GestureClassifier.region(unit: unit, layout: layout, ink: ink, objects: objects, plain: plain)
             await MainActor.run { finish(verdict) }
         }
     }
@@ -1470,22 +1474,28 @@ extension OverlayView {
         let image = self.image
         let recognizer = Self.recognizer
         let aspect = CGFloat(image.width) / CGFloat(max(1, image.height))
-        let finish: (Result<[RecognizedLine], Error>) -> Void = { [weak self] result in
-            self?.finishRecognition(result, aspect: aspect)
+        let screenHeight = bounds.height
+        let finish: (Result<(TextLayout, GestureClassifier.PlainText), Error>) -> Void = { [weak self] result in
+            self?.finishRecognition(result)
         }
         Task.detached(priority: .userInitiated) {
-            let result = Result { try recognizer(image) }
+            let result = Result {
+                let layout = TextLayout(lines: try recognizer(image), aspect: aspect)
+                return (layout, GestureClassifier.plainText(layout: layout, screenHeight: screenHeight, image: image))
+            }
             await MainActor.run { finish(result) }
         }
     }
 
-    private func finishRecognition(_ result: Result<[RecognizedLine], Error>, aspect: CGFloat) {
+    private func finishRecognition(_ result: Result<(TextLayout, GestureClassifier.PlainText), Error>) {
         recognizing = false
         switch result {
-        case .success(let lines):
-            textLayout = TextLayout(lines: lines, aspect: aspect)
+        case .success(let (layout, plain)):
+            textLayout = layout
+            plainText = plain
         case .failure(let error):
             textLayout = .empty
+            plainText = nil
             if textWanted { warning = "Couldn't read text on this screen: \(error.localizedDescription)" }
         }
         let waiters = recognitionWaiters

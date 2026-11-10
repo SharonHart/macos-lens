@@ -21,21 +21,28 @@ public struct RecognizedLine: Equatable, Sendable {
     public var text: String
     public var box: CGRect
     public var units: [TextUnit]
+    /// Vision's confidence in the line's text, 0–1.
+    public var confidence: Float
+    /// The line's baseline angle in degrees, counterclockwise from horizontal.
+    public var tilt: CGFloat
 
-    public init(text: String, box: CGRect, units: [TextUnit]) {
+    public init(text: String, box: CGRect, units: [TextUnit], confidence: Float = 1, tilt: CGFloat = 0) {
         self.text = text
         self.box = box
         self.units = units
+        self.confidence = confidence
+        self.tilt = tilt
     }
 
     /// A line whose unit boxes are estimated from character positions, used for translated text and as a fallback
     /// when Vision has no box for a word.
-    public static func estimated(text: String, box: CGRect) -> RecognizedLine {
+    public static func estimated(text: String, box: CGRect, confidence: Float = 1,
+                                 tilt: CGFloat = 0) -> RecognizedLine {
         let splits = TextSplitter.units(of: text)
         let boxes = TextSplitter.estimatedBoxes(lineBox: box, text: text, ranges: splits.map(\.range),
                                                 rightToLeft: TextScript.isRightToLeft(text))
         let units = zip(splits, boxes).map { TextUnit(text: String(text[$0.range]), separator: $0.separator, box: $1) }
-        return RecognizedLine(text: text, box: box, units: units)
+        return RecognizedLine(text: text, box: box, units: units, confidence: confidence, tilt: tilt)
     }
 }
 
@@ -173,6 +180,8 @@ public struct TextWord: Equatable, Sendable {
     public let box: CGRect
     public let line: Int
     public let block: Int
+    /// Vision's confidence in the word's line, 0–1.
+    public let confidence: Float
 }
 
 public struct TextLine: Equatable, Sendable {
@@ -180,6 +189,10 @@ public struct TextLine: Equatable, Sendable {
     public let box: CGRect
     public let block: Int
     public let rightToLeft: Bool
+    /// Vision's confidence in the line, 0–1.
+    public let confidence: Float
+    /// The line's baseline angle in degrees, counterclockwise from horizontal.
+    public let tilt: CGFloat
 }
 
 /// Recognized text in reading order, with the geometry Lens-style text selection needs. Boxes are unit rects of the
@@ -272,10 +285,10 @@ public struct TextLayout: Equatable, Sendable {
                 let start = words.count
                 for unit in line.units {
                     words.append(TextWord(text: unit.text, separator: unit.separator, box: unit.box,
-                                          line: lines.count, block: blockIndex))
+                                          line: lines.count, block: blockIndex, confidence: line.confidence))
                 }
                 lines.append(TextLine(words: start..<words.count, box: line.box, block: blockIndex,
-                                      rightToLeft: rtl[lineIndex]))
+                                      rightToLeft: rtl[lineIndex], confidence: line.confidence, tilt: line.tilt))
             }
             blocks.append(firstLine..<lines.count)
         }

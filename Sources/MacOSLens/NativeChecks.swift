@@ -259,27 +259,39 @@ enum NativeChecks {
             view.hidePanel()
 
             guard spin(until: { view.textLayout != nil }, timeout: 20), let layout = view.textLayout,
-                  let lens = layout.words.firstIndex(where: { $0.text == "LENS" }) else {
+                  let lens = layout.words.firstIndex(where: { $0.text == "LENS" }),
+                  let anything = layout.words.firstIndex(where: { $0.text == "anything" }),
+                  let plain = view.plainText else {
                 throw LensError.message("The fixture's text was not recognized.")
             }
+            let bodyBox = layout.view(anything, in: view.canvas)
+            let bodyPoint = CGPoint(x: bodyBox.midX, y: bodyBox.midY)
+            let headline = layout.words[lens].line, body = layout.words[anything].line
+            check(!plain.lines[headline] && plain.lines[body] && plain.pressable[body],
+                  "the 48 pt headline reads as display type and the 18 pt line as plain body text")
             view.selectWholeScreen()
-            check(layout.view(lens, in: view.canvas).contains(wordPoint) && view.cursor(at: wordPoint) == .iBeam &&
-                  view.cursor(at: CGPoint(x: 600, y: 300)) == .crosshair,
-                  "once the text is read, the cursor is an I-beam over words and a crosshair elsewhere")
+            check(layout.view(lens, in: view.canvas).contains(wordPoint) && view.cursor(at: bodyPoint) == .iBeam &&
+                  view.cursor(at: wordPoint) == .crosshair && view.cursor(at: CGPoint(x: 600, y: 300)) == .crosshair,
+                  "once the text is read, the cursor is an I-beam over body text and a crosshair over display type " +
+                  "and elsewhere")
 
-            // Highlighting a line or clicking a word goes straight to text selection, without any upload.
+            // Highlighting a line or clicking a word of body text goes straight to text selection, without any upload.
             var count = changes.count
             gesture([CGPoint(x: 100, y: 528), CGPoint(x: 300, y: 530), CGPoint(x: 470, y: 527)], on: view)
             check(view.hasTextSelection && view.selectedText == "HELLO LENS 123" &&
                   texts.last?.text == "HELLO LENS 123" && texts.last?.search == true && view.framedRect == nil &&
                   !view.isDimmed && !view.actionChip.isHidden && changes.count == count,
-                  "a highlight along a line of text selects its words straight away and searches them as text")
-            click(wordPoint, on: view)
-            check(view.selectedText == "LENS" && texts.last?.text == "LENS" && texts.last?.search == true &&
+                  "a highlight along a line of text, even display type, selects its words and searches them as text")
+            click(bodyPoint, on: view)
+            check(view.selectedText == "anything" && texts.last?.text == "anything" && texts.last?.search == true &&
                   changes.count == count && ["Copy", "Listen", "Translate", "Search"].allSatisfy(chip(view).contains),
-                  "clicking a word selects it with handles and the text menu")
+                  "clicking a word of body text selects it with handles and the text menu")
+            click(bodyPoint, on: view, clicks: 2)
+            check(view.selectedText == "Search anything you see on your screen" && changes.count == count,
+                  "double-clicking a word selects its line")
             click(wordPoint, on: view, clicks: 2)
-            check(view.selectedText == "HELLO LENS 123" && changes.count == count, "double-clicking a word selects its line")
+            check(view.selectedText == "HELLO LENS 123" && changes.count == count,
+                  "double-clicking a word in display type still selects its line")
 
             // Tapping a picture leaves text for visual search; tapping a word switches back.
             click(CGPoint(x: red.midX, y: red.midY), on: view)
@@ -289,12 +301,20 @@ enum NativeChecks {
                   "tapping a picture leaves text selection and selects the object, found on this Mac, for visual search")
             let objectArea = view.selection
             count = changes.count
-            click(wordPoint, on: view)
-            check(view.selectedText == "LENS" && view.framedRect == nil && view.selection == objectArea &&
+            click(bodyPoint, on: view)
+            check(view.selectedText == "anything" && view.framedRect == nil && view.selection == objectArea &&
                   changes.count == count, "clicking a word outside the area switches to text, keeping the area")
             gesture(circle, on: view)
             check(!view.hasTextSelection && view.framedRect != nil && changes.count == count + 1 &&
                   changes.last?.1 == false, "circling a picture again clears the text and searches the area visually")
+
+            // A single tap on a word in display type, as on a headline, a logo or a sign, is a visual tap.
+            count = changes.count
+            click(wordPoint, on: view)
+            check(!view.hasTextSelection && view.actionChip.isHidden && spin(until: { changes.count > count }) &&
+                  view.selection.map { $0.contains(wordPoint) } == true && view.framedRect != nil &&
+                  changes.last?.1 == false,
+                  "tapping a word in 48 pt display type searches the area around it visually instead of selecting it")
 
             // A box around a picture and some text: the picture wins, and the words are offered.
             count = changes.count
@@ -304,8 +324,8 @@ enum NativeChecks {
                   changes.last?.1 == false,
                   "a box around a picture and some text searches visually and offers “Select text”")
             view.selectTextButton?.performClick(nil)
-            check(view.selectedText == "HELLO LENS 123" && view.selectTextChip.isHidden &&
-                  texts.last?.text == "HELLO LENS 123" && texts.last?.search == true && changes.count == count + 1,
+            check(view.selectedText == layout.allText && view.selectTextChip.isHidden &&
+                  texts.last?.text == layout.allText && texts.last?.search == true && changes.count == count + 1,
                   "“Select text” selects the words in the area and searches them as text")
 
             // Zoom and pan never change which pixels are searched.
@@ -408,7 +428,8 @@ enum NativeChecks {
                 screenView.selectTextButton?.performClick(nil)
                 let all = screenView.selectedText
                 _ = overlayWindow.performKeyEquivalent(with: key(8, "c", flags: .command, in: overlayWindow))
-                check(all == "HELLO LENS 123" && board.string(forType: .string) == all &&
+                check(all == screenView.textLayout?.allText && all.hasPrefix("HELLO LENS 123") &&
+                      all.contains("anything") && board.string(forType: .string) == all &&
                       screenView.toastText == "Copied" && changes.isEmpty && cancelled == closedBefore,
                       "“Select all text” selects every word and Command-C copies it (to a private pasteboard here), " +
                       "showing “Copied” first")
@@ -1191,15 +1212,18 @@ enum NativeChecks {
             return CGPoint(x: box.midX, y: box.midY)
         }
         guard let the = word("The"), let quickWord = word("quick"), let brown = word("brown"), let fox = word("fox"),
-              let jumps = word("jumps"), let over = word("over"), word("lazy") != nil, let dog = word("dog"),
+              let jumps = word("jumps"), word("over") != nil, let lazy = word("lazy"), let dog = word("dog"),
               let good = word("Good"), let write = word("Write"),
               let email = layout.words.firstIndex(where: { $0.text.contains("@") }) else {
             throw LensError.message("The text fixture was read as \(layout.words.map { $0.text }).")
         }
         let paragraph = "The quick brown fox\njumps over the lazy dog"
+        let greeting = "Good morning, have a great day"
         check(layout.blocks.count == 3 && layout.allText.hasPrefix(paragraph + "\n\n") &&
-              layout.allText.hasSuffix("\n\nGood morning"),
+              layout.allText.hasSuffix("\n\n" + greeting),
               "words are joined in reading order with line breaks inside paragraphs and blank lines between them")
+        check(view.plainText?.lines.allSatisfy { $0 } == true && view.plainText?.pressable.allSatisfy { $0 } == true,
+              "18 pt body text on light and dark backgrounds reads as plain text throughout")
         check(view.textSurface.words.path?.isEmpty == false && view.textSurface.words.opacity == 0 &&
               !view.isDimmed && view.cursor(at: centre(quickWord)) == .iBeam &&
               view.cursor(at: CGPoint(x: 900, y: 300)) == .crosshair,
@@ -1234,13 +1258,14 @@ enum NativeChecks {
         } else {
             check(false, "the selection has start and end handles")
         }
-        tap(centre(over), clicks: 2)
+        // The start handle hangs over the next line of 18 pt text, so these presses keep clear of it.
+        tap(centre(lazy), clicks: 2)
         check(view.selectedText == "jumps over the lazy dog", "double-clicking selects the line")
-        tap(centre(over), clicks: 3)
+        tap(centre(lazy), clicks: 3)
         check(view.selectedText == paragraph, "triple-clicking selects the paragraph")
         tap(centre(brown))
-        tap(centre(over), flags: .shift)
-        check(view.selectedText == "brown fox\njumps over", "Shift-click extends the selection")
+        tap(centre(dog), flags: .shift)
+        check(view.selectedText == "brown fox\njumps over the lazy dog", "Shift-click extends the selection")
         press("Select all", view)
         check(view.selectedText == layout.allText, "Select all selects every word on the screen")
         let closes = cancelled
@@ -1266,7 +1291,7 @@ enum NativeChecks {
         check(commands.count == 1 && commands[0].0 == .search && commands[0].1 == "Write to hello@example.com",
               "Search hands only the selected text to the app")
 
-        // Circling, boxing or scribbling over text goes straight to text selection, as Lens does.
+        // Circling, boxing or scribbling over plain body text goes straight to text selection, as Lens does.
         func loop(around first: Int, _ last: Int, padding: CGSize) -> [CGPoint] {
             let box = layout.view(first, in: view.canvas).union(layout.view(last, in: view.canvas))
             return (0...32).map { step in
@@ -1278,13 +1303,14 @@ enum NativeChecks {
         let loose = CGSize(width: 30, height: 14), snug = CGSize(width: 24, height: 8)
         // Vision may read the address as one word or split it at the "@".
         let emailLineEnd = layout.lines[layout.words[email].line].words.upperBound - 1
+        let greetingEnd = layout.lines[layout.words[good].line].words.upperBound - 1
         let circles: [(String, [CGPoint], String)] = [
             ("a paragraph", loop(around: the, dog, padding: loose), paragraph),
             ("a single line", loop(around: jumps, dog, padding: snug), "jumps over the lazy dog"),
-            ("a phrase", loop(around: brown, fox, padding: snug), "brown fox"),
+            ("a phrase in running text", loop(around: brown, fox, padding: snug), "brown fox"),
             ("a line with an email address", loop(around: write, emailLineEnd, padding: snug),
              "Write to hello@example.com"),
-            ("light text on a dark band", loop(around: good, good + 1, padding: snug), "Good morning")
+            ("light text on a dark band", loop(around: good, greetingEnd, padding: snug), greeting)
         ]
         var inked = false
         for (name, points, expected) in circles {
@@ -1349,7 +1375,7 @@ enum NativeChecks {
         let everything = view.textRange.map { layout.lineRects(for: $0, canvas: view.canvas) } ?? []
         check(!everything.isEmpty && !everything.contains { $0.intersects(view.actionChip.frame) } &&
               view.bounds.contains(view.actionChip.frame),
-              "with no room above or below, the action menu sits beside the selection instead of covering it")
+              "the action menu sits clear of every selected line and inside the screen")
         check(view.selectedText.contains("QUICK") && chip(view).contains("Copy") && chip(view).contains("Listen") &&
               chip(view).contains("Search") && !chip(view).contains("Translate"),
               "translated text can be selected, copied, read aloud and searched")
@@ -1864,7 +1890,7 @@ enum NativeChecks {
         return image
     }
 
-    /// A line of text and a red circle.
+    /// A headline in 48 pt display type, a line of 18 pt body text and a red circle.
     static func fixture() throws -> CGImage {
         try drawn { size in
             NSColor(calibratedRed: 0.93, green: 0.95, blue: 0.98, alpha: 1).setFill()
@@ -1872,24 +1898,27 @@ enum NativeChecks {
             ("HELLO LENS 123" as NSString).draw(at: NSPoint(x: 100, y: 500), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 48), .foregroundColor: NSColor.black
             ])
+            ("Search anything you see on your screen" as NSString).draw(at: NSPoint(x: 100, y: 400), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black
+            ])
             NSColor.systemRed.setFill()
             NSBezierPath(ovalIn: NSRect(x: 760, y: 160, width: 120, height: 120)).fill()
         }
     }
 
-    /// A two-line paragraph, an email address and a white-on-dark line.
+    /// Body text at 18 pt: a two-line paragraph, an email address and a white-on-dark line.
     static func textFixture() throws -> CGImage {
         try drawn { size in
             NSColor(calibratedWhite: 0.97, alpha: 1).setFill()
             NSRect(origin: .zero, size: size).fill()
-            let dark: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 40), .foregroundColor: NSColor.black]
+            let dark: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.black]
             ("The quick brown fox" as NSString).draw(at: NSPoint(x: 100, y: 560), withAttributes: dark)
-            ("jumps over the lazy dog" as NSString).draw(at: NSPoint(x: 100, y: 505), withAttributes: dark)
-            ("Write to hello@example.com" as NSString).draw(at: NSPoint(x: 100, y: 380), withAttributes: dark)
+            ("jumps over the lazy dog" as NSString).draw(at: NSPoint(x: 100, y: 532), withAttributes: dark)
+            ("Write to hello@example.com" as NSString).draw(at: NSPoint(x: 100, y: 440), withAttributes: dark)
             NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.2, alpha: 1).setFill()
             NSRect(x: 0, y: 120, width: size.width, height: 120).fill()
-            ("Good morning" as NSString).draw(at: NSPoint(x: 100, y: 160), withAttributes: [
-                .font: NSFont.systemFont(ofSize: 40), .foregroundColor: NSColor.white
+            ("Good morning, have a great day" as NSString).draw(at: NSPoint(x: 100, y: 170), withAttributes: [
+                .font: NSFont.systemFont(ofSize: 18), .foregroundColor: NSColor.white
             ])
         }
     }
