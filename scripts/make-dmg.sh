@@ -17,6 +17,7 @@
 #
 # With MACOS_LENS_SIGN_IDENTITY set to a Developer ID Application identity, the disk image is signed too, and with
 # notarization credentials as well (see scripts/notarize.sh) it's notarized and stapled before it's checked and copied.
+# Only a disk image that won't be notarized shows how to get past Gatekeeper's "Not Opened" dialog under the caption.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -33,6 +34,9 @@ DMG="$DIST/$NAME.dmg"
 LATEST_DMG="$DIST/macOS-Lens.dmg"
 CACHE="$HOME/Library/Caches/macos-lens"
 REQUIREMENTS="$ROOT/scripts/dmg/requirements.txt"
+IDENTITY="${MACOS_LENS_SIGN_IDENTITY:--}"
+NOTARIZE=0
+[[ "$IDENTITY" != - && -n "${MACOS_LENS_NOTARY_PROFILE:-}${MACOS_LENS_NOTARY_KEY:-}" ]] && NOTARIZE=1
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/macos-lens-dmg.XXXXXX")"
 MOUNT=""
@@ -61,7 +65,12 @@ APP_NAME="$(basename "$APP")"
 step "Drawing the window background"
 ART="$WORK/art"
 swiftc -O -parse-as-library -module-name DMGArt Sources/MacOSLens/LensMark.swift scripts/dmg/DMGArt.swift -o "$WORK/dmg-art"
-"$WORK/dmg-art" render "$ART" scripts/dmg/Urbanist-Variable.ttf
+# A notarized image opens without Gatekeeper's "Not Opened" dialog, so it doesn't need the way past it.
+if ((NOTARIZE)); then
+    "$WORK/dmg-art" render "$ART" scripts/dmg/Urbanist-Variable.ttf --notarized
+else
+    "$WORK/dmg-art" render "$ART" scripts/dmg/Urbanist-Variable.ttf
+fi
 tiffutil -cathidpicheck "$ART/background.png" "$ART/background@2x.png" -out "$ART/background.tiff" >/dev/null
 # The volume shows the app's own icon, which scripts/build-app.sh draws from the same mark.
 ICON_FILE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist" 2>/dev/null || true)"
@@ -90,12 +99,11 @@ rm -f "$DMG"
     { tail -n 30 "$WORK/dmgbuild.log" >&2; die "dmgbuild failed."; }
 hdiutil verify -quiet "$DMG"
 
-IDENTITY="${MACOS_LENS_SIGN_IDENTITY:--}"
 if [[ "$IDENTITY" != - ]]; then
     step "Signing $NAME.dmg as $IDENTITY"
     codesign --force --sign "$IDENTITY" --timestamp "$DMG"
     codesign --verify --strict "$DMG"
-    if [[ -n "${MACOS_LENS_NOTARY_PROFILE:-}${MACOS_LENS_NOTARY_KEY:-}" ]]; then
+    if ((NOTARIZE)); then
         bash scripts/notarize.sh "$DMG"
     fi
 fi

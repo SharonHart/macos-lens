@@ -8,7 +8,9 @@ import UniformTypeIdentifiers
 /// The disk image's volume icon is the app's AppIcon.icns.
 ///
 ///     dmg-art icon <out.iconset>                   the app icon, 16–512 pt at @1x and @2x, for iconutil
-///     dmg-art render <out dir> <font.ttf>          background.png, background@2x.png, layout.json
+///     dmg-art render <out dir> <font.ttf> [--notarized]
+///                                                  background.png, background@2x.png, layout.json; --notarized
+///                                                  leaves out the Gatekeeper hint
 ///     dmg-art resolve <alias hex> <bookmark hex>   prints the paths the background alias and bookmark resolve to
 ///     dmg-art preview <dump.json> <mount> <dir>    light and dark previews of the window, and the volume's icon
 @main
@@ -18,7 +20,9 @@ enum DMGArt {
         do {
             switch (args.first, args.count) {
             case ("icon", 2): try writeIconset(to: URL(fileURLWithPath: args[1]))
-            case ("render", 3): try render(into: URL(fileURLWithPath: args[1]), font: URL(fileURLWithPath: args[2]))
+            case ("render", 3): try render(into: URL(fileURLWithPath: args[1]), font: URL(fileURLWithPath: args[2]), hint: true)
+            case ("render", 4) where args[3] == "--notarized":
+                try render(into: URL(fileURLWithPath: args[1]), font: URL(fileURLWithPath: args[2]), hint: false)
             case ("resolve", 3): try resolve(aliasHex: args[1], bookmarkHex: args[2])
             case ("preview", 4):
                 try preview(dump: URL(fileURLWithPath: args[1]), volume: args[2], into: URL(fileURLWithPath: args[3]))
@@ -47,10 +51,12 @@ enum Layout {
     static let applications = CGPoint(x: 490, y: 190)
     static let wordmarkCentre: CGFloat = 72
     static let wordmarkSize: CGFloat = 34
-    static let captionCentre: CGFloat = 334
     static let captionSize: CGFloat = 16
     static let caption = "Drag to Applications to install"
-    /// The way past Gatekeeper's "Not Opened" dialog for a release that isn't notarized; the buttons are in bold.
+    /// The caption sits a little higher when the hint is drawn under it.
+    static func captionCentre(hint: Bool) -> CGFloat { hint ? 334 : 346 }
+    /// The way past Gatekeeper's "Not Opened" dialog, with the buttons in bold. It's drawn only on disk images that
+    /// aren't notarized: macOS opens a notarized app without that dialog, so there the line would only mislead.
     static let hintCentre: CGFloat = 367
     static let hintSize: CGFloat = 12.5
     static let hintMargin: CGFloat = 24
@@ -217,8 +223,9 @@ func draw(_ line: CTLine, x: CGFloat, baseline: CGFloat, in context: CGContext) 
 // MARK: - Background
 
 /// The window background: a Lens-blue wash, darker at the top and bottom, flat behind the icon labels, with the
-/// mark and wordmark, an arrow from the app to Applications, the caption, and how to get past Gatekeeper.
-func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool) throws {
+/// mark and wordmark, an arrow from the app to Applications, the caption and, when `hint` is set, how to get past
+/// Gatekeeper.
+func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool, hint withHint: Bool) throws {
     let context = canvas.context
     let height = canvas.size.height
     let band = Brand.lensBlue.atLuminance(Brand.labelLuminance)
@@ -268,7 +275,8 @@ func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool) throws {
     let caption = textLine(Layout.caption, font: captionFont, color: white)
     let captionCap = CTFontGetCapHeight(captionFont)
     draw(caption.line, x: ((canvas.size.width - caption.width) / 2).rounded(),
-         baseline: canvas.y(top: Layout.captionCentre + captionCap / 2), in: context)
+         baseline: canvas.y(top: Layout.captionCentre(hint: withHint) + captionCap / 2), in: context)
+    guard withHint else { return }
 
     let hintFont = try brandFont(font, size: Layout.hintSize, weight: 500)
     let hint = try mixedLine(Layout.hint, regular: hintFont, strong: try brandFont(font, size: Layout.hintSize, weight: 700), color: white)
@@ -282,7 +290,7 @@ func drawBackground(on canvas: Canvas, font: URL, withArtwork: Bool) throws {
 /// Fails unless Finder's labels and our white text keep at least 4.5:1 against the background under them, and
 /// returns the lowest contrast for the labels and for the white text.
 @discardableResult
-func checkContrast(_ plain: Canvas) throws -> (labels: Double, text: Double) {
+func checkContrast(_ plain: Canvas, hint: Bool) throws -> (labels: Double, text: Double) {
     var lowest = (labels: Double.infinity, text: Double.infinity)
     let black = 0.0, white = 1.0
     for rect in Layout.labelRects {
@@ -292,11 +300,14 @@ func checkContrast(_ plain: Canvas) throws -> (labels: Double, text: Double) {
         guard worst >= 4.5 else { throw Failure(String(format: "label contrast %.2f:1 (luminance %.3f…%.3f)", worst, low, high)) }
         lowest.labels = min(lowest.labels, worst)
     }
-    let textRects = [
+    var textRects = [
         CGRect(x: 150, y: Layout.wordmarkCentre - 24, width: 360, height: 48),
-        CGRect(x: 180, y: Layout.captionCentre - 14, width: 300, height: 28),
-        CGRect(x: Layout.hintMargin, y: Layout.hintCentre - 11, width: Layout.window.width - 2 * Layout.hintMargin, height: 22),
+        CGRect(x: 180, y: Layout.captionCentre(hint: hint) - 14, width: 300, height: 28),
     ]
+    if hint {
+        textRects.append(CGRect(x: Layout.hintMargin, y: Layout.hintCentre - 11,
+                                width: Layout.window.width - 2 * Layout.hintMargin, height: 22))
+    }
     for rect in textRects {
         guard let high = plain.pixels(inTop: rect).map(\.luminance).max(), RGB.contrast(high, white) >= 4.5 else {
             throw Failure("white text falls below 4.5:1 at \(rect)")
@@ -374,16 +385,17 @@ func writeIconset(to iconset: URL) throws {
     }
 }
 
-func render(into directory: URL, font: URL) throws {
+func render(into directory: URL, font: URL, hint: Bool) throws {
     let files = FileManager.default
     try files.createDirectory(at: directory, withIntermediateDirectories: true)
+    print(hint ? "with the Gatekeeper hint (the image won't be notarized)" : "without the Gatekeeper hint (the image will be notarized)")
     for scale in [1, 2] as [CGFloat] {
         let plain = Canvas(size: Layout.window, scale: scale)
-        try plain.draw { _ in try drawBackground(on: plain, font: font, withArtwork: false) }
-        let contrast = try checkContrast(plain)
+        try plain.draw { _ in try drawBackground(on: plain, font: font, withArtwork: false, hint: hint) }
+        let contrast = try checkContrast(plain, hint: hint)
         if scale == 1 { print(String(format: "lowest contrast: %.2f:1 for Finder's labels, %.2f:1 for our white text", contrast.labels, contrast.text)) }
         let canvas = Canvas(size: Layout.window, scale: scale)
-        try canvas.draw { _ in try drawBackground(on: canvas, font: font, withArtwork: true) }
+        try canvas.draw { _ in try drawBackground(on: canvas, font: font, withArtwork: true, hint: hint) }
         try canvas.writePNG(to: directory.appendingPathComponent(scale == 1 ? "background.png" : "background@2x.png"))
     }
 
