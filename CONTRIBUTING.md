@@ -114,7 +114,9 @@ You need a paid Apple Developer Program membership.
 ### Release a version
 
 1. Bump `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist` and merge it
-   to `main`.
+   to `main`. Run the native checks on your Mac first (`swift build && .build/debug/MacOSLens
+   --self-test-native`): the workflow runs only `LensCoreTests`, because the native checks need a
+   real Mac's display and GPU.
 2. Do a dry run. It builds, signs and notarizes, and keeps the files on the run without publishing:
 
    ```sh

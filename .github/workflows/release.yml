@@ -106,11 +106,13 @@ jobs:
             echo "MACOS_LENS_NOTARY_ISSUER=$NOTARY_ISSUER_ID"
           } >> "$GITHUB_ENV"
 
-      # Runs the tests and the native checks, builds the universal app, signs, notarizes and staples it, zips it,
-      # builds, signs, notarizes and staples the disk image, and writes SHA256SUMS and dist/release-notes.md.
+      # Runs the tests, builds the universal app, signs, notarizes and staples it, zips it, builds, signs, notarizes
+      # and staples the disk image, and writes SHA256SUMS and dist/release-notes.md. The native checks need a real
+      # Mac's display and GPU, which hosted runners don't have, so run them on your Mac before releasing.
       - name: Test, build, sign and notarize
         env:
           MACOS_LENS_REQUIRE_UNIVERSAL: "1"
+          MACOS_LENS_SKIP_NATIVE_CHECKS: "1"
         run: bash scripts/release.sh "$VERSION"
 
       - name: Check the files people download
