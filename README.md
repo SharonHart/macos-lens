@@ -20,11 +20,16 @@ again to update. Options such as `--no-launch` or `--dir <path>` go after `bash 
 
 Download [macOS-Lens.dmg](https://github.com/SharonHart/macos-lens/releases/latest/download/macOS-Lens.dmg)
 from the [latest release](https://github.com/SharonHart/macos-lens/releases/latest), open it, and drag
-**macOS Lens** onto **Applications**. Releases aren't notarized, so the first launch shows
-**“macOS Lens” Not Opened** (“Apple could not verify…”). Click **Done**, not **Move to Trash**, then open
-System Settings › Privacy & Security and click **Open Anyway** next to the macOS Lens message. That
-button stays for about an hour after the blocked launch; if it's gone, open the app again. This is
-needed once per downloaded version.
+**macOS Lens** onto **Applications**, then open it from Applications. Releases aren't notarized, so the
+first launch shows **“macOS Lens” Not Opened** (“Apple could not verify…”):
+
+1. Click **Done**.
+2. Open System Settings › Privacy & Security, scroll to **Security** and click **Open Anyway** next to
+   the macOS Lens message. The button stays for about an hour after the blocked launch; if it's gone,
+   open the app again.
+3. Click **Open Anyway** again and confirm with your password or Touch ID.
+
+This is needed once per downloaded version.
 
 ## Homebrew
 
